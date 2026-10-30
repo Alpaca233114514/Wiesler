@@ -4,6 +4,8 @@
 
 2026-10-30：本轮实现没有修改 Cargo.toml 或 Cargo.lock，沿用这些锁定依赖。受控验收脚本使用现有 Python 标准库；可选 Windows TCP 探针使用已有 PowerShell/Get-NetTCPConnection，不安装系统组件。最新功能与验证边界见[本轮实现记录](implementation-20261030.md)。
 
+2026-10-30 浸泡测试补充：`nodes soak` 使用 PATH 中已有的 curl 执行 HTTPS 数据面请求，控制器请求仍沿用只支持回环 HTTP 的 reqwest；没有增加或升级 Cargo 依赖、没有改 lockfile。本机已有 curl 8.21.0 / Schannel，未安装新组件。仅验证了本机模拟 HTTP 代理路径，真实 HTTPS 传输仍待实测，见[浸泡测试说明](soak.md)。
+
 ## 1. 环境基线
 
 | 项目 | 检查结果 |

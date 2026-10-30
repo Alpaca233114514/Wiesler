@@ -3,12 +3,17 @@ use std::{
     fs::OpenOptions,
     io::{BufWriter, Write},
     path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use wiesler::{
     config::ControllerConfig,
     diagnostics,
     observer::{LogKind, ObserveOptions, observe},
+    probes::soak::{SoakOptions, run as soak},
     recorder::{RecordOptions, record},
     store,
 };
@@ -17,7 +22,7 @@ use wiesler::{
 #[command(
     version,
     about = "Wiesler — 本地网络与代理可观测性工具",
-    after_help = "只读采样；连接消失不等于请求失败。控制器密钥仅从 WIESLER_MIHOMO_SECRET 环境变量读取。"
+    after_help = "观察命令只读；nodes soak --apply 会临时切换代理组并恢复。控制器密钥仅从 WIESLER_MIHOMO_SECRET 环境变量读取。"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -26,6 +31,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// 节点主动测试；批量切换需要显式 --apply
+    Nodes {
+        #[command(subcommand)]
+        command: NodeCommand,
+    },
     /// 持续观察 DSHObserver / Codex 日志及 Windows TCP；--polls 1 可导入现有数据
     Observe {
         #[arg(long, default_value = "wiesler.sqlite3")]
@@ -99,9 +109,150 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum NodeCommand {
+    /// 持续下载后逐次发起真实请求；候选节点默认只预览
+    Soak {
+        #[arg(long, default_value = "http://127.0.0.1:9097")]
+        controller: String,
+        /// mixed-port / HTTP 代理入口，不是控制器
+        #[arg(long)]
+        proxy: String,
+        #[arg(long)]
+        group: String,
+        /// 导入 stable.json 数组，按 fail、p90、median 排序
+        #[arg(long, conflicts_with = "node")]
+        from: Option<PathBuf>,
+        /// 显式候选，可重复；省略 from/node 时测试当前路由
+        #[arg(long)]
+        node: Vec<String>,
+        #[arg(long, default_value_t = 5)]
+        top: usize,
+        /// 允许临时切换组；结束和 Ctrl+C 后恢复原选择
+        #[arg(long, conflicts_with = "dry_run")]
+        apply: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value_t = 60_000_000)]
+        bytes: u64,
+        #[arg(long, default_value_t = 15)]
+        pings: u32,
+        /// 下载端点必须实际返回 --bytes 指定的完整字节数
+        #[arg(long)]
+        download_url: Option<String>,
+        #[arg(long, default_value = "https://chatgpt.com/cdn-cgi/trace")]
+        url: String,
+        #[arg(long, default_value_t = 90_000)]
+        download_timeout_ms: u64,
+        #[arg(long, default_value_t = 20_000)]
+        timeout_ms: u64,
+        #[arg(long, default_value_t = 3000)]
+        controller_timeout_ms: u64,
+        /// 仅新建，不覆盖已有结果
+        #[arg(long, default_value = "nodes-soak.json")]
+        out: PathBuf,
+        /// 默认使用当前用户临时目录中的共用锁
+        #[arg(long)]
+        lock_file: Option<PathBuf>,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
+        Some(Command::Nodes {
+            command:
+                NodeCommand::Soak {
+                    controller,
+                    proxy,
+                    group,
+                    from,
+                    node,
+                    top,
+                    apply,
+                    dry_run,
+                    bytes,
+                    pings,
+                    download_url,
+                    url,
+                    download_timeout_ms,
+                    timeout_ms,
+                    controller_timeout_ms,
+                    out,
+                    lock_file,
+                },
+        }) => {
+            let secret = std::env::var("WIESLER_MIHOMO_SECRET").ok();
+            let controller = ControllerConfig::new(
+                &controller,
+                secret.as_deref(),
+                Duration::from_millis(controller_timeout_ms),
+            )?;
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let signal_flag = cancelled.clone();
+            let signal = tokio::spawn(async move {
+                while tokio::signal::ctrl_c().await.is_ok() {
+                    signal_flag.store(true, Ordering::Relaxed);
+                }
+            });
+            let result = soak(
+                SoakOptions {
+                    controller,
+                    proxy,
+                    group,
+                    from,
+                    nodes: node,
+                    top,
+                    apply,
+                    dry_run,
+                    bytes,
+                    pings,
+                    download_url: download_url.unwrap_or_else(|| {
+                        format!("https://speed.cloudflare.com/__down?bytes={bytes}")
+                    }),
+                    url,
+                    download_timeout: Duration::from_millis(download_timeout_ms),
+                    ping_timeout: Duration::from_millis(timeout_ms),
+                    output: out.clone(),
+                    lock_file: lock_file
+                        .unwrap_or_else(|| std::env::temp_dir().join("wiesler-nodes-soak.lock")),
+                },
+                cancelled,
+            )
+            .await;
+            signal.abort();
+            let report = result?;
+            println!(
+                "{}；结果 {}；原选择 {}；恢复状态 {}。",
+                report.status,
+                out.display(),
+                report.original_selection,
+                report.restoration
+            );
+            for row in &report.results {
+                println!(
+                    "{}：下载 {} bytes / {}，请求 {}/{}，中位 {:?} ms，p90 {:?} ms。",
+                    row.name,
+                    row.summary.soak_bytes,
+                    row.summary.soak_ok,
+                    row.summary.ping_ok,
+                    report.pings,
+                    row.summary.median_ms,
+                    row.summary.p90_ms
+                );
+            }
+            if report.status == "preview" {
+                println!(
+                    "候选：{}。未发送测速流量；候选切换测试需指定 --from/--node 并加 --apply。",
+                    report.candidates.join("、")
+                );
+            }
+            anyhow::ensure!(
+                matches!(report.status.as_str(), "preview" | "completed"),
+                "浸泡测试未完整通过，详情见 {}",
+                out.display()
+            );
+        }
         Some(Command::Observe {
             db,
             dsh,

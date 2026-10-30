@@ -27,7 +27,7 @@
 
 ## 未完成或未验证
 
-- 当前真实 Mihomo 仅有命名管道，`cvctl` 对实际管道返回 OS Access is denied；HTTP 9097 不监听。未改代理配置、管道 ACL、执行策略或管理员身份。真实 Mihomo 生命周期/断流验收未完成。
+- 当前真实 Mihomo 仅有命名管道，`cvctl` 对实际管道返回 OS Access is denied；HTTP 9097 不监听。未改代理配置、管道 ACL、执行策略或管理员身份。真实 Mihomo 生命周期/断流验收未完成。19:00 后续更新：已把 `enable_external_controller` 置为 `true` 并重启客户端，9097 可用，HTTP 控制器的读写均已在本机验证，见[节点选择实测](node-selection-20261030.md)；生命周期/断流验收仍未完成。
 - Rust 子进程内的 Windows TCP 采样在此宿主环境看不到目标进程，已作为 SourceGap；独立 PowerShell 采样与快照导入已验证。不能声称直接持续 TCP 采集已验收。
 - 没有实时模型调用、生产断流重现、Codex OTLP 接入、请求到代理节点的精确映射、出口公网 IP 验证、TCP FIN/RST 抓包、Linux/Debian 实测或 GUI。
 - P1 的源码与隔离验证完成，但报告原定的真实控制器验收仍待可访问来源；P2 仅完成应用日志及 Windows TCP 证据的这一部分。

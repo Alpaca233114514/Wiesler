@@ -57,9 +57,14 @@ impl Mihomo {
     }
 
     async fn get(&self, path: &str) -> Result<Vec<u8>, ProbeError> {
-        let mut request = self
-            .client
-            .get(self.config.url.join(path).expect("fixed API path"));
+        self.send(
+            self.client
+                .get(self.config.url.join(path).expect("API path")),
+        )
+        .await
+    }
+
+    async fn send(&self, mut request: reqwest::RequestBuilder) -> Result<Vec<u8>, ProbeError> {
         if let Some(header) = &self.config.authorization {
             request = request.header(AUTHORIZATION, header.clone());
         }
@@ -81,6 +86,33 @@ impl Mihomo {
         Ok(body)
     }
 
+    fn proxy_url(&self, name: &str) -> Result<reqwest::Url, ProbeError> {
+        if name.is_empty() || matches!(name, "." | "..") {
+            return Err(ProbeError::InvalidSnapshot);
+        }
+        let mut url = self.config.url.clone();
+        url.path_segments_mut()
+            .expect("HTTP URL")
+            .extend(["proxies", name]);
+        Ok(url)
+    }
+
+    pub async fn proxy(&self, name: &str) -> Result<ProxyInfo, ProbeError> {
+        let bytes = self.send(self.client.get(self.proxy_url(name)?)).await?;
+        serde_json::from_slice(&bytes).map_err(|_| ProbeError::InvalidSnapshot)
+    }
+
+    /// 显式写路径；调用者负责原值记录与恢复。 / Explicit mutation; caller journals and restores selection.
+    pub async fn select_proxy(&self, group: &str, name: &str) -> Result<(), ProbeError> {
+        self.send(
+            self.client
+                .put(self.proxy_url(group)?)
+                .json(&serde_json::json!({"name": name})),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn version(&self) -> Result<String, ProbeError> {
         #[derive(Deserialize)]
         struct Version {
@@ -97,6 +129,15 @@ impl Mihomo {
     pub async fn snapshot(&self) -> Result<Snapshot, ProbeError> {
         parse_snapshot(&self.get("connections").await?)
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProxyInfo {
+    #[serde(rename = "type")]
+    pub proxy_type: String,
+    pub now: Option<String>,
+    #[serde(default)]
+    pub all: Vec<String>,
 }
 
 #[derive(Deserialize)]
