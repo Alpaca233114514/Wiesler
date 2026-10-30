@@ -2,6 +2,8 @@
 
 日期：2026-10-29。范围：Windows 本机开发环境与 P1 依赖准备。
 
+2026-10-30：本轮实现没有修改 Cargo.toml 或 Cargo.lock，沿用这些锁定依赖。受控验收脚本使用现有 Python 标准库；可选 Windows TCP 探针使用已有 PowerShell/Get-NetTCPConnection，不安装系统组件。最新功能与验证边界见[本轮实现记录](implementation-20261030.md)。
+
 ## 1. 环境基线
 
 | 项目 | 检查结果 |

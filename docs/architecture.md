@@ -2,6 +2,8 @@
 
 状态：设计约定，2026-10-29。网络功能尚未实现。
 
+2026-10-30 实现更新：P1 已落地；另新增 `application.rs`、`observer.rs`、`sockets.rs` 和 `diagnostics.rs`，承载 DSH/Codex 日志、TCP 快照与可读诊断。实际范围、串行日志采样限制与未完成验收见[运行说明](running.md)及[本轮记录](implementation-20261030.md)。本文其余部分是原设计，包含尚未实施的后续模块。
+
 ## 1. 架构决策
 
 采用单 Cargo 包起步，内部按采集、领域、存储和展示划分模块。事件契约稳定后再拆 workspace，避免初期跨 crate 调整成本。优先验证 Windows，核心逻辑保持与操作系统 API 解耦；Debian 后端按独立里程碑验收。

@@ -1,0 +1,19 @@
+{
+  "uploadTotal": 100,
+  "downloadTotal": 200,
+  "connections": [{
+    "id": "synthetic-connection-1",
+    "metadata": {
+      "network": "tcp", "type": "Mixed",
+      "sourceIP": "127.0.0.1", "sourcePort": "50001",
+      "destinationIP": "203.0.113.10", "destinationPort": "443",
+      "host": "example.invalid", "process": "test-client.exe",
+      "processPath": "C:\\private\\test-client.exe",
+      "uid": 1234, "inboundUser": "private-user"
+    },
+    "upload": 10, "download": 20,
+    "start": "2026-10-30T10:00:00.123456789+08:00",
+    "chains": ["TEST-NODE", "TEST-GROUP"],
+    "rule": "DomainSuffix", "rulePayload": "private-rule.invalid"
+  }]
+}
