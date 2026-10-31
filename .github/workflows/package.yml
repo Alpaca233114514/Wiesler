@@ -56,7 +56,7 @@ jobs:
           distribution: temurin
           java-version: '21'
       - name: Install Android SDK components
-        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0"'
       - name: Test, lint and build unsigned release
         working-directory: android
         run: java -classpath gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain --no-daemon :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
