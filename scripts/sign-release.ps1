@@ -11,6 +11,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+. "$PSScriptRoot/authenticode-status.ps1"
 if (Test-Path $OutputDirectory) { throw 'Output already exists; select a new directory.' }
 if ((Get-Content (Join-Path $WindowsPackage 'SOURCE_COMMIT.txt')).Trim() -ne $SourceCommit) {
     throw 'Windows artifact source commit does not match.'
@@ -35,10 +36,11 @@ foreach ($name in @('wiesler.exe', 'wiesler-desktop.exe')) {
     $verification = & $SignTool verify /pa /v $file 2>&1 | Out-String
     $verifyExit = $LASTEXITCODE
     $PSNativeCommandUseErrorActionPreference = $true
-    if ($verifyExit -ne 0 -and !($verifyExit -eq 1 -and $verification -match '0x800B0109' -and $signature.Status -in @('UnknownError', 'NotTrusted'))) {
+    $trustCode = [WieslerAuthenticode]::Verify((Resolve-Path $file).Path)
+    if ($trustCode -notin @([uint32]0, [uint32]2148204809) -or ($verifyExit -ne 0 -and !($verifyExit -eq 1 -and $trustCode -eq [uint32]2148204809 -and $signature.Status -in @('UnknownError', 'NotTrusted')))) {
         throw "Authenticode verification failed: $name`n$verification"
     }
-    $report.windows += [ordered]@{file=$name; signer=$cert.Subject; thumbprint=$cert.Thumbprint; status="$($signature.Status)"; timestampSigner=$signature.TimeStamperCertificate.Subject; verification=$verification.Trim()}
+    $report.windows += [ordered]@{file=$name; signer=$cert.Subject; thumbprint=$cert.Thumbprint; status="$($signature.Status)"; trustCode=('0x{0:X8}' -f $trustCode); timestampSigner=$signature.TimeStamperCertificate.Subject; verification=$verification.Trim()}
 }
 Export-Certificate -Cert $cert -FilePath (Join-Path $OutputDirectory 'Wiesler-windows-signing.cer') | Out-Null
 
@@ -47,7 +49,7 @@ $aligned = Join-Path $OutputDirectory 'android-aligned-unsigned.apk'
 & (Join-Path $AndroidBuildTools 'zipalign.exe') -p -f 4 $UnsignedApk $aligned
 if ($LASTEXITCODE) { throw 'APK alignment failed.' }
 try {
-    $protected = Get-Content (Join-Path $AndroidKeyDirectory 'password.dpapi') -Raw | ConvertTo-SecureString
+    $protected = (Get-Content (Join-Path $AndroidKeyDirectory 'password.dpapi') -Raw).Trim() | ConvertTo-SecureString
     $env:WIESLER_ANDROID_STORE_PASSWORD = [System.Net.NetworkCredential]::new('', $protected).Password
     & (Join-Path $AndroidBuildTools 'apksigner.bat') sign --ks (Join-Path $AndroidKeyDirectory 'release.p12') --ks-key-alias wiesler-release --ks-pass env:WIESLER_ANDROID_STORE_PASSWORD --key-pass env:WIESLER_ANDROID_STORE_PASSWORD --out $apk $aligned
     if ($LASTEXITCODE) { throw 'APK signing failed.' }

@@ -93,8 +93,33 @@ async fn truncated_log_creates_new_source_epoch() {
     before["callId"] = json!("before-rotation");
     std::fs::write(&log, format!("{}\n{}\n", before, before)).unwrap();
     let path = log.clone();
+    let observed_db = db.clone();
     let writer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(150));
+        // Wait for durable evidence, not machine speed / 等待首条记录落库，不依赖机器速度。
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let mut observed = false;
+            if let Ok(sessions) = store::sessions(&observed_db) {
+                for session in sessions {
+                    store::visit_events(&observed_db, &session.session_id, |event| {
+                        if let EventData::ApplicationObserved { observation } = event.data {
+                            observed |=
+                                observation.request_id.as_deref() == Some("before-rotation");
+                        }
+                        Ok(())
+                    })
+                    .unwrap();
+                }
+            }
+            if observed {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "observer did not import the initial log"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         std::fs::write(path, format!("{}\n", call())).unwrap();
     });
     let session = observe(ObserveOptions {
@@ -104,7 +129,7 @@ async fn truncated_log_creates_new_source_epoch() {
         socket_inputs: vec![],
         from_end: false,
         interval: Duration::from_millis(100),
-        polls: Some(5),
+        polls: Some(20),
         max_events: 1000,
     })
     .await
