@@ -5,6 +5,10 @@ edition = "2024"
 license = "Apache-2.0"
 publish = false
 
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

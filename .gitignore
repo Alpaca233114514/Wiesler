@@ -32,3 +32,10 @@ rustc-ice-*.txt
 /desktop/target/
 /desktop/target-verified/
 /desktop/target-logged/
+
+# Release staging and private signing material / 发布暂存与私钥
+/dist/
+*.pfx
+*.p12
+*.jks
+*.keystore
