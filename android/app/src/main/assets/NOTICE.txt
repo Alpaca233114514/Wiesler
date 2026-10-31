@@ -1,0 +1,11 @@
+Wiesler Android
+Copyright 2026 Wiesler contributors
+Licensed under the Apache License, Version 2.0.
+
+This application includes Kotlin standard library 2.2.20.
+Copyright JetBrains s.r.o. and Kotlin Programming Language contributors.
+Source: https://github.com/JetBrains/kotlin/tree/v2.2.20
+License: Apache License, Version 2.0 (LICENSE-Apache-2.0.txt).
+
+The build-only Gradle Wrapper is from https://github.com/gradle/gradle
+and is licensed under Apache License, Version 2.0.

@@ -1,0 +1,18 @@
+[package]
+name = "wiesler-desktop"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+wiesler = { path = ".." }
+serde = { version = "1.0.229", features = ["derive"] }

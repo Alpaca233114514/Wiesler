@@ -1,0 +1,76 @@
+name: Package
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'codex/**']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows tests and portable package
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install locked Rust toolchain
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          rustup default 1.97.1
+      - name: Check versions
+        run: python scripts/check-release-version.py
+      - name: Test and build
+        run: ./scripts/build-windows.ps1
+      - name: Upload unsigned package for signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-unsigned
+          path: dist/windows-x64/
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    name: Android tests and release APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Android SDK components
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0"'
+      - name: Test, lint and build unsigned release
+        working-directory: android
+        run: java -classpath gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain --no-daemon :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
+      - name: Upload unsigned APK for signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-unsigned
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Android test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports
+          path: android/app/build/reports/
+          if-no-files-found: warn
