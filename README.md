@@ -1,5 +1,7 @@
 # Wiesler
 
+Android 原生 Kotlin 客户端见 [移动端说明](android/README.md)：手机实时流量、应用排行、可选 Mihomo 连接观察与网络诊断。
+
 Rust 编写的本地网络与代理可观测性工具，面向客户端断流、代理链路异常和连接归属排查。
 
 已实现 Mihomo HTTP 采样、快照差分、SQLite 证据日志、JSONL 导出/回放，以及 DSHObserver 和 Codex 日志接入。`diagnose` 提供 Markdown / JSON 诊断，包含 DSH TPS、Codex 分范围耗时/错误、TCP 代理端口和出口候选。
@@ -74,4 +76,4 @@ HTTP 测试只访问随机回环端口的模拟控制器；受限环境需要正
 - [节点选择实测](docs/node-selection-20261030.md)：四阶段漏斗方法、稳定性证据、能力化设计与未验证限制。
 - [浸泡测试](docs/soak.md)：CLI、度量口径、临时切换与恢复、JSON 结果及隔离验证。
 
-默认方向为本机只读观察，先接入 Mihomo，再扩展系统连接表和按需抓包；Web/Tauri 界面放在后续阶段。
+默认方向为本机只读观察，先接入 Mihomo，再扩展系统连接表和按需抓包；Tauri 桌面已接入实时连接观察和已有 SQLite 会话诊断，见 [桌面使用说明](desktop/README.md)。
