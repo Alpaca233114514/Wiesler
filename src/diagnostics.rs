@@ -76,6 +76,7 @@ pub struct ProxyConnection {
 pub struct DiagnosticReport {
     pub sessions: Vec<store::Session>,
     pub dsh: Vec<DshGroup>,
+    pub dsh_recent: Vec<EvidenceObservation>,
     pub dsh_unfinished_calls: usize,
     pub codex_latency_by_scope: BTreeMap<String, Latency>,
     pub codex_recent: Vec<EvidenceObservation>,
@@ -282,6 +283,23 @@ pub fn report(path: &Path, selected_sessions: &[String]) -> Result<DiagnosticRep
         })
         .collect();
     let mut latency: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
+    let mut dsh_recent: Vec<_> = builder
+        .dsh
+        .values()
+        .map(|(id, row)| EvidenceObservation {
+            event_id: id.clone(),
+            observation: row.clone(),
+        })
+        .collect();
+    dsh_recent.sort_by_key(|item| {
+        std::cmp::Reverse(
+            item.observation
+                .source_time
+                .as_deref()
+                .and_then(|v| v.parse::<u64>().ok()),
+        )
+    });
+    dsh_recent.truncate(100);
     let mut recent = vec![];
     let mut recent_errors = vec![];
     let mut error_counts = BTreeMap::new();
@@ -293,6 +311,7 @@ pub fn report(path: &Path, selected_sessions: &[String]) -> Result<DiagnosticRep
                 .push((id.clone(), ms));
         }
         if row.status.as_deref() == Some("failed")
+            || row.http_status.is_some_and(|code| code >= 400)
             || row.failure_code.is_some()
             || row.category.contains("closed")
         {
@@ -356,7 +375,7 @@ pub fn report(path: &Path, selected_sessions: &[String]) -> Result<DiagnosticRep
         } else {
             (None, None)
         };
-    Ok(DiagnosticReport { sessions, dsh, dsh_unfinished_calls: unfinished,
+    Ok(DiagnosticReport { sessions, dsh, dsh_recent, dsh_unfinished_calls: unfinished,
         codex_latency_by_scope: latency.into_iter().map(|(key, values)| {
             let (ids, numbers): (Vec<_>, Vec<_>) = values.into_iter().unzip();
             let mut latency = Latency::from(numbers); latency.evidence_ids = ids; (key, latency)
@@ -405,6 +424,44 @@ impl DiagnosticReport {
                 number(value.median_ms),
                 number(value.p95_ms)
             ));
+        }
+        for (name, rows) in [("DSH", &self.dsh_recent), ("Codex", &self.codex_recent)] {
+            out.push_str(&format!("\n## {name} 最近日志状态（最多 100 条）\n\n"));
+            if rows.is_empty() {
+                out.push_str("暂无日志记录。\n");
+                continue;
+            }
+            out.push_str("| 来源时间 | 事件 / 范围 | HTTP 状态码 | 结果 | 错误码 | 来源 | 证据 |\n| --- | --- | --- | --- | --- | --- | --- |\n");
+            for item in rows {
+                let row = &item.observation;
+                let result = if row.failure_code.is_some()
+                    || matches!(row.status.as_deref(), Some("failed" | "error" | "aborted"))
+                    || row.http_status.is_some_and(|v| v >= 400)
+                {
+                    "失败"
+                } else {
+                    match row.http_status {
+                        Some(200..=299) => "成功",
+                        Some(300..=399) => "重定向",
+                        Some(100..=199) => "信息响应",
+                        _ => "未知",
+                    }
+                };
+                out.push_str(&format!(
+                    "| {} | {} / {} | {} | {} | {} | {}:{} | {} |\n",
+                    safe(row.source_time.as_deref()),
+                    safe(Some(&row.category)),
+                    safe(Some(&row.scope)),
+                    row.http_status
+                        .map(|v| format!("HTTP {v}"))
+                        .unwrap_or_else(|| "未记录".into()),
+                    result,
+                    safe(row.failure_code.as_deref()),
+                    safe(Some(&row.file)),
+                    row.line,
+                    safe(Some(&item.event_id))
+                ));
+            }
         }
         out.push_str("\n## Codex 端口与出口\n\n");
         out.push_str(&format!(

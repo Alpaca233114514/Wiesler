@@ -1,6 +1,24 @@
 const $ = id => document.getElementById(id);
 const invoke = window.__TAURI__?.core.invoke;
 let connections = [], previous = null, history = [], running = false, generation = 0, timer;
+const requestLogs = [];
+function appendRequestLog(code, error) {
+  const status = Number.isInteger(code) && code >= 100 && code <= 599 ? code : null;
+  const failed = Boolean(error) || status >= 400;
+  const result = failed ? '失败' : status >= 200 && status < 300 ? '成功' : status >= 300 ? '重定向' : '未知';
+  requestLogs.unshift({time:new Date().toLocaleTimeString(), status, result, error});
+  requestLogs.length = Math.min(requestLogs.length, 100);
+  $('request-log-rows').replaceChildren();
+  for (const entry of requestLogs) {
+    const tr = document.createElement('tr');
+    [entry.time, 'Mihomo /connections', entry.status ? `HTTP ${entry.status}` : '未取得状态码', entry.result, entry.error || '—'].forEach((value, index) => {
+      const td = document.createElement('td'); td.textContent = value;
+      if (index === 2 || index === 3) td.className = entry.result === '失败' ? 'http-error' : entry.result === '成功' ? 'green' : 'amber';
+      tr.append(td);
+    });
+    $('request-log-rows').append(tr);
+  }
+}
 const bytes = n => { if (n == null) return '—'; const i = Math.min(3, Math.floor(Math.log(Math.max(1, n)) / Math.log(1024))); return `${(n / 1024 ** i).toFixed(i ? 2 : 0)} ${['B','KB','MB','GB'][i]}`; };
 const target = c => `${c.metadata.host || c.metadata.destination_ip || '未知'}:${c.metadata.destination_port ?? '?'}`;
 function render() {
@@ -47,6 +65,7 @@ async function poll(token, controller) {
   try {
     const data = await invoke('snapshot', {controller});
     if (token !== generation) return;
+    appendRequestLog(data.http_status, null);
     const dt = previous ? (data.observed_at - previous.observed_at) / 1000 : 0;
     // 缺口与计数回退重新建立基线 / Rebaseline after gaps or counter resets.
     const rate = dt > 0 && data.download_total >= previous.download_total && data.upload_total >= previous.upload_total ? [(data.download_total - previous.download_total)/dt, (data.upload_total - previous.upload_total)/dt] : null;
@@ -59,10 +78,12 @@ async function poll(token, controller) {
     $('sample-time').textContent = new Date(data.observed_at).toLocaleTimeString(); $('health').textContent = '已连接'; $('live-label').textContent = '实时观察中'; $('source-status').textContent = '只读采样中';
   } catch(error) {
     if (token !== generation) return;
+    const message = error?.message || String(error);
+    appendRequestLog(error?.http_status, message);
     previous = null; connections = []; render(); history.push(null); history = history.slice(-60); chart();
     for (const id of ['active','rate','upload-rate']) $(id).textContent = '—';
     $('processes').textContent = '当前连接未知'; $('health').textContent = '采集异常'; $('live-label').textContent = '数据不可用';
-    $('source-status').textContent = `控制器读取失败：${String(error)}；将自动重试`;
+    $('source-status').textContent = `控制器读取失败：${message}；将自动重试`;
   } finally { if (running && token === generation) timer = setTimeout(()=>poll(token,controller),1000); }
 }
 function start() {

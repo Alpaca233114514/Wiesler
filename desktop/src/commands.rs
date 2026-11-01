@@ -11,20 +11,43 @@ use wiesler::{
 
 #[derive(Serialize)]
 pub struct LiveSnapshot {
+    http_status: u16,
     observed_at: u64,
     connections: Vec<Connection>,
     upload_total: u64,
     download_total: u64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SnapshotError {
+    message: String,
+    http_status: Option<u16>,
+}
+
+impl From<String> for SnapshotError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            http_status: None,
+        }
+    }
+}
+
 #[tauri::command]
-pub async fn snapshot(controller: String) -> Result<LiveSnapshot, String> {
+pub async fn snapshot(controller: String) -> Result<LiveSnapshot, SnapshotError> {
     let secret = std::env::var("WIESLER_MIHOMO_SECRET").ok();
     let config = ControllerConfig::new(&controller, secret.as_deref(), Duration::from_secs(3))
         .map_err(|e| e.to_string())?;
     let probe = Mihomo::new(config).map_err(|_| "无法初始化控制器客户端".to_string())?;
-    let data = probe.snapshot().await.map_err(|e| e.to_string())?;
+    let (http_status, data) = probe
+        .snapshot_with_status()
+        .await
+        .map_err(|e| SnapshotError {
+            message: e.error.to_string(),
+            http_status: e.http_status,
+        })?;
     Ok(LiveSnapshot {
+        http_status,
         observed_at: Stamp::now(Instant::now()).utc_ms,
         connections: data.connections,
         upload_total: data.upload_total,
@@ -89,8 +112,40 @@ mod tests {
         });
         let data = tauri::async_runtime::block_on(snapshot(address)).unwrap();
         assert_eq!(data.connections.len(), 1);
+        assert_eq!(data.http_status, 200);
         assert!(data.observed_at > 0);
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn desktop_snapshot_preserves_http_error_codes_without_response_body() {
+        for code in [200, 401, 403, 503] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = format!("http://{}", listener.local_addr().unwrap());
+            let worker = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0];
+                while !request.ends_with(b"\r\n\r\n") {
+                    assert_eq!(stream.read(&mut byte).unwrap(), 1);
+                    request.push(byte[0]);
+                }
+                write!(
+                    stream,
+                    "HTTP/1.1 {code} Test\r\nContent-Length: 7\r\nConnection: close\r\n\r\nPRIVATE"
+                )
+                .unwrap();
+            });
+            let error = tauri::async_runtime::block_on(snapshot(address))
+                .err()
+                .unwrap();
+            assert_eq!(error.http_status, Some(code));
+            assert!(!error.message.contains("PRIVATE"));
+            worker.join().unwrap();
+        }
     }
 
     #[test]

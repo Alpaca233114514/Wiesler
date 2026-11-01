@@ -37,6 +37,19 @@ class MainActivity : Activity() {
     private val worker = Executors.newFixedThreadPool(2)
     private val rates = RateTracker()
     private val trend = ArrayList<Rate?>()
+    private val forwardRates = ForwardTrafficTracker()
+    private val forwardTrend = ArrayList<Rate?>()
+    private var forwardEnabled = false
+    private var overseasExits = emptySet<String>()
+    private var forwardRate: Rate? = null
+    private var forwardState = "监控未开启"
+    private var forwardSampledAt = "尚未采样"
+    private var forwardChart: TrendView? = null
+    private var forwardMetrics: TextView? = null
+    private var forwardUpload: TextView? = null
+    private var forwardStatus: TextView? = null
+    private var forwardTotal: TextView? = null
+    private var routeFilter: TrafficRoute? = null
     private lateinit var root: LinearLayout
     private lateinit var body: LinearLayout
     private lateinit var nav: LinearLayout
@@ -70,6 +83,8 @@ class MainActivity : Activity() {
     private var probeBusy = false
     private var probeResult = "按需检查 HTTPS 连通性"
     private var probeLabel: TextView? = null
+    private val requestLogs = ArrayDeque<RequestLog>()
+    private var requestLogRows: LinearLayout? = null
     private val connectivity get() = getSystemService(ConnectivityManager::class.java)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -77,6 +92,7 @@ class MainActivity : Activity() {
         page = savedInstanceState?.getInt("page") ?: 0
         paused = savedInstanceState?.getBoolean("paused") ?: false
         controller = getPreferences(0).getString("controller", controller) ?: controller
+        overseasExits = getPreferences(0).getStringSet("overseasExits", emptySet())?.toSet() ?: emptySet()
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
         root.setOnApplyWindowInsetsListener { v, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
@@ -105,13 +121,15 @@ class MainActivity : Activity() {
     }
 
     override fun onResume() {
-        super.onResume(); foreground = true; rates.reset(); trend.add(null)
+        super.onResume(); foreground = true; rates.reset(); lastRate = null; appendSample(trend, null)
+        resetForward()
         handler.removeCallbacks(tick); handler.post(tick)
         if (page == 1) showApps()
     }
 
     override fun onPause() {
-        foreground = false; controllerGeneration++; handler.removeCallbacks(tick); rates.reset()
+        foreground = false; controllerGeneration++; handler.removeCallbacks(tick); rates.reset(); lastRate = null
+        resetForward()
         super.onPause()
     }
 
@@ -126,12 +144,29 @@ class MainActivity : Activity() {
             if (!paused) {
                 lastRx = TrafficStats.getTotalRxBytes(); lastTx = TrafficStats.getTotalTxBytes()
                 lastRate = rates.accept(CounterSample(SystemClock.elapsedRealtime(), lastRx, lastTx))
-                trend.add(lastRate); if (trend.size > 60) trend.removeAt(0)
+                appendSample(trend, lastRate)
                 sampledAt = SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date())
-                updateOverview()
-                if (controllerEnabled && !controllerBusy) fetchConnections()
             }
+            updateOverview()
+            if (controllerEnabled && (forwardEnabled || page == 2) && !controllerBusy) fetchConnections()
             handler.postDelayed(this, 1000)
+        }
+    }
+
+    private fun appendSample(samples: MutableList<Rate?>, rate: Rate?) {
+        samples.add(rate)
+        if (samples.size > 60) samples.removeAt(0)
+    }
+
+    private fun resetForward(clearHistory: Boolean = false) {
+        forwardRates.reset(clearTotals = clearHistory)
+        forwardRate = null
+        if (clearHistory) forwardTrend.clear() else appendSample(forwardTrend, null)
+        forwardState = when {
+            !forwardEnabled -> "监控未开启"
+            !controllerEnabled -> "请连接手机控制器"
+            overseasExits.isEmpty() -> "请选择海外出口"
+            else -> "等待连续采样"
         }
     }
 
@@ -165,7 +200,9 @@ class MainActivity : Activity() {
     private fun render() {
         body.removeAllViews(); nav.removeAllViews()
         download = null; upload = null; chart = null; status = null; networkText = null; totalText = null
+        forwardChart = null; forwardMetrics = null; forwardUpload = null; forwardStatus = null; forwardTotal = null
         usageRows = null; connectionRows = null; controllerStatus = null; probeLabel = null
+        requestLogRows = null
         listOf("◉\n概览", "▦\n应用", "⇄\n连接", "◎\n诊断").forEachIndexed { index, title ->
             nav.addView(label(title, 13, if (page == index) mint else muted, page == index).apply {
                 gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(8)); minHeight = dp(56)
@@ -179,36 +216,78 @@ class MainActivity : Activity() {
 
     private fun showOverview() {
         heading("YOUR NETWORK, IN FOCUS", "手机网络", "此刻的流量与连接")
-        val live = row()
-        status = label("●  实时观察", 14, mint)
-        live.addView(status, LinearLayout.LayoutParams(0, -2, 1f))
-        live.addView(button(if (paused) "继续观察" else "暂停") {
-            paused = !paused; controllerGeneration++; rates.reset(); trend.add(null); render()
-        })
-        body.addView(live); gap()
-        val metrics = row()
-        fun metric(title: String, color: Int): TextView {
-            val block = column().apply { background = shape(surface); setPadding(dp(16), dp(20), dp(12), dp(18)) }
-            metrics.addView(block, LinearLayout.LayoutParams(0, -2, 1f).apply { if (metrics.childCount == 1) marginEnd = dp(10) })
-            block.addView(label(title, 13, color)); gap(block, 14)
-            val value = label("—", 26, ink, true); block.addView(value)
-            return value
-        }
-        download = metric("↓  下载速率", mint); upload = metric("↑  上传速率", violet)
-        body.addView(metrics); gap()
         val graphCard = card()
-        val graphTitle = row()
-        graphTitle.addView(label("流量趋势", 15, ink, true), LinearLayout.LayoutParams(0, -2, 1f))
-        graphTitle.addView(label("● 下载  ", 12, mint)); graphTitle.addView(label("● 上传", 12, violet))
-        graphCard.addView(graphTitle); gap(graphCard, 12)
-        chart = TrendView(this); graphCard.addView(chart, LinearLayout.LayoutParams(-1, dp(140)))
-        val times = row(); times.addView(label("最近一分钟", 12, muted), LinearLayout.LayoutParams(0, -2, 1f)); times.addView(label("现在", 12, muted)); graphCard.addView(times)
+        graphCard.addView(monitorSwitch("全局流量", !paused) { enabled ->
+            paused = !enabled; rates.reset(); lastRate = null; appendSample(trend, null); updateOverview()
+        })
+        val metrics = row()
+        download = label("—", 18, mint, true); upload = label("—", 18, violet, true)
+        metrics.addView(download, LinearLayout.LayoutParams(0, -2, 1f)); metrics.addView(upload, LinearLayout.LayoutParams(0, -2, 1f))
+        graphCard.addView(metrics)
+        chart = TrendView(this, trend); graphCard.addView(chart, LinearLayout.LayoutParams(-1, dp(120)))
+        status = label("", 13, muted); graphCard.addView(status)
+
+        val forwardCard = card()
+        forwardCard.addView(monitorSwitch("海外转发流量", forwardEnabled) { enabled ->
+            forwardEnabled = enabled; controllerGeneration++; resetForward(); updateOverview()
+        })
+        val forwardValues = row()
+        forwardMetrics = label("↓ —", 18, mint, true); forwardUpload = label("↑ —", 18, violet, true)
+        forwardValues.addView(forwardMetrics, LinearLayout.LayoutParams(0, -2, 1f))
+        forwardValues.addView(forwardUpload, LinearLayout.LayoutParams(0, -2, 1f))
+        forwardCard.addView(forwardValues)
+        forwardChart = TrendView(this, forwardTrend); forwardCard.addView(forwardChart, LinearLayout.LayoutParams(-1, dp(120)))
+        forwardStatus = label("", 13, muted); forwardCard.addView(forwardStatus)
+        forwardTotal = label("", 13, muted); forwardCard.addView(forwardTotal); gap(forwardCard, 10)
+        val actions = row()
+        actions.addView(button("控制器") { configureController() }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
+        actions.addView(button("海外出口") { configureExits() }, LinearLayout.LayoutParams(0, -2, 1f))
+        forwardCard.addView(actions)
+        gap(forwardCard, 8)
+        forwardCard.addView(button("查看转发连接") { routeFilter = TrafficRoute.OVERSEAS; page = 2; render(); scroll.scrollTo(0, 0) })
         val networkCard = card()
         networkCard.addView(label("当前网络", 14, muted)); gap(networkCard, 8)
         networkText = label("读取中", 18, ink, true); networkCard.addView(networkText)
         gap(networkCard, 14); totalText = label("", 14, muted); networkCard.addView(totalText)
         networkCard.setOnClickListener { showScope() }
         updateOverview()
+    }
+
+    private fun monitorSwitch(title: String, checked: Boolean, change: (Boolean) -> Unit) = Switch(this).apply {
+        text = title; textSize = 17f; setTextColor(ink); minHeight = dp(48)
+        isChecked = checked; setOnCheckedChangeListener { _, value -> change(value) }
+    }
+
+    private fun routedCounter(item: JSONObject): RoutedCounter = RoutedCounter(
+        item.optString("id"), item.optString("start"),
+        item.optJSONArray("chains")?.optString(0)?.takeIf { it.isNotBlank() },
+        item.optLong("download", -1), item.optLong("upload", -1)
+    )
+
+    private fun configureExits() {
+        val candidates = (connections.mapNotNull { routedCounter(it).exit }.filter(::eligibleExit) + overseasExits).distinct().sorted()
+        val selected = overseasExits.toMutableSet()
+        val dialog = AlertDialog.Builder(this).setTitle("选择海外出口节点")
+        if (candidates.isEmpty()) dialog.setMessage("先连接控制器并访问海外服务，或手动填写实际出口节点名称。")
+        else dialog.setMultiChoiceItems(candidates.toTypedArray(), candidates.map { it in selected }.toBooleanArray()) { _, index, checked ->
+                if (checked) selected.add(candidates[index]) else selected.remove(candidates[index])
+            }
+        dialog.setPositiveButton("保存") { _, _ -> saveExits(selected) }
+            .setNeutralButton("手动填写") { _, _ ->
+                val input = EditText(this).apply {
+                    setText(overseasExits.joinToString("\n")); hint = "每行一个实际出口节点名称"; minLines = 3
+                    setPadding(dp(24), dp(12), dp(24), dp(12))
+                }
+                AlertDialog.Builder(this).setTitle("海外出口节点名称").setView(input)
+                    .setPositiveButton("保存") { _, _ -> saveExits(input.text.lines().map { it.trim() }.filter(::eligibleExit).toSet()) }
+                    .setNegativeButton("取消", null).show()
+            }.setNegativeButton("取消", null).show()
+    }
+
+    private fun saveExits(selected: Set<String>) {
+        overseasExits = selected.toSet()
+        getPreferences(0).edit().putStringSet("overseasExits", overseasExits).apply()
+        controllerGeneration++; resetForward(clearHistory = true); render()
     }
 
     private fun bytes(value: Double): String {
@@ -232,9 +311,14 @@ class MainActivity : Activity() {
         return transport + if (vpn) "  /  VPN 已启用" else ""
     }
     private fun updateOverview() {
-        download?.text = lastRate?.let { bytes(it.rx) + "/s" } ?: "—"
-        upload?.text = lastRate?.let { bytes(it.tx) + "/s" } ?: "—"
-        status?.text = if (paused) "Ⅱ  已暂停 · $sampledAt" else "●  实时观察 · $sampledAt"
+        download?.text = "↓ " + (lastRate?.let { bytes(it.rx) + "/s" } ?: "—")
+        upload?.text = "↑ " + (lastRate?.let { bytes(it.tx) + "/s" } ?: "—")
+        status?.text = if (paused) "监控已关闭" else "最近 60 次采样 · $sampledAt"
+        forwardMetrics?.text = "↓ " + (forwardRate?.let { bytes(it.rx) + "/s" } ?: "—")
+        forwardUpload?.text = "↑ " + (forwardRate?.let { bytes(it.tx) + "/s" } ?: "—")
+        forwardStatus?.text = forwardState
+        forwardTotal?.text = "已观测 ↓ ${bytes(forwardRates.observedRx)}  ↑ ${bytes(forwardRates.observedTx)}"
+        forwardChart?.invalidate()
         networkText?.text = networkSummary()
         totalText?.text = "本次开机累计\n↓ ${bytes(lastRx.toDouble())}    ↑ ${bytes(lastTx.toDouble())}"
         chart?.invalidate()
@@ -326,6 +410,12 @@ class MainActivity : Activity() {
         val filters = row()
         listOf("全部", "TCP", "UDP").forEach { value -> filters.addView(button(value, protocol == value) { protocol = value; render() }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) }) }
         body.addView(filters); gap()
+        val routes = row()
+        (listOf<TrafficRoute?>(null) + TrafficRoute.entries).forEach { value ->
+            routes.addView(button(value?.title ?: "全部", routeFilter == value) { routeFilter = value; render() },
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(4) })
+        }
+        body.addView(routes); gap()
         connectionRows = column(); body.addView(connectionRows); renderConnections()
     }
 
@@ -336,7 +426,7 @@ class MainActivity : Activity() {
         val password = EditText(this).apply { hint = "Secret（如有，仅本次使用）"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD; isSingleLine = true; importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO }
         content.addView(address); content.addView(password)
         val dialog = AlertDialog.Builder(this).setTitle("连接手机控制器").setView(content).setNegativeButton("取消", null).setNeutralButton("断开") { _, _ ->
-            controllerGeneration++; controllerEnabled = false; secret = ""; connections = emptyList(); connectionState = "已断开"; render()
+            controllerGeneration++; controllerEnabled = false; secret = ""; connections = emptyList(); connectionState = "已断开"; resetForward(); render()
         }.setPositiveButton("连接", null).create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
@@ -346,8 +436,12 @@ class MainActivity : Activity() {
                 if (uri == null || uri.host == null || uri.userInfo != null || uri.query != null || uri.fragment != null || !uri.path.isNullOrEmpty() || (uri.scheme != "https" && !(uri.scheme == "http" && loopback))) {
                     address.error = "使用本机 HTTP 或 HTTPS 根地址，不包含密钥"; return@setOnClickListener
                 }
+                val changedController = controller != value
                 controller = value; secret = password.text.toString(); controllerEnabled = true; controllerGeneration++
+                if (changedController) overseasExits = emptySet()
+                resetForward(clearHistory = true)
                 getPreferences(0).edit().putString("controller", controller).apply()
+                getPreferences(0).edit().putStringSet("overseasExits", overseasExits).apply()
                 connections = emptyList(); connectionState = "连接中…"; dialog.dismiss(); render()
                 if (!controllerBusy) fetchConnections()
             }
@@ -356,15 +450,18 @@ class MainActivity : Activity() {
     }
 
     private fun fetchConnections() {
+        if (!foreground || !controllerEnabled || controllerBusy) return
         controllerBusy = true
         val generation = controllerGeneration; val address = controller; val token = secret
         worker.execute {
+            var httpStatus: Int? = null
             val result = runCatching {
                 val connection = URL("$address/connections").openConnection() as HttpURLConnection
                 try {
                     connection.connectTimeout = 3000; connection.readTimeout = 3000; connection.instanceFollowRedirects = false
                     if (token.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $token")
                     val code = connection.responseCode
+                    httpStatus = code.takeIf { it in 100..599 }
                     if (code == 401 || code == 403) error("鉴权失败，请检查 Secret")
                     if (code != 200) error("控制器返回 HTTP $code")
                     val payload = connection.inputStream.bufferedReader().use { reader ->
@@ -375,13 +472,30 @@ class MainActivity : Activity() {
                     val json = JSONObject(payload)
                     if (!json.has("connections")) error("不是有效的 Mihomo 快照")
                     val array = json.optJSONArray("connections")
-                    (0 until (array?.length() ?: 0)).map { array!!.getJSONObject(it) }
+                    if (array == null && !json.isNull("connections")) error("连接列表格式无效")
+                    Pair(SystemClock.elapsedRealtime(), (0 until (array?.length() ?: 0)).map { array!!.getJSONObject(it) })
                 } finally { connection.disconnect() }
             }
             handler.post {
                 controllerBusy = false
-                if (isDestroyed || !foreground || paused || generation != controllerGeneration) return@post
-                result.fold(onSuccess = { connections = it; connectionState = "● 已连接 · ${it.size} 条连接 · $sampledAt" }, onFailure = {
+                if (isDestroyed || !foreground || generation != controllerGeneration) return@post
+                result.fold(onSuccess = { (time, items) ->
+                    connections = items
+                    forwardSampledAt = SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date())
+                    connectionState = "● 已连接 · HTTP $httpStatus · ${items.size} 条连接 · $forwardSampledAt"
+                    appendRequestLog("Mihomo /connections", httpStatus, null)
+                    if (forwardEnabled) {
+                        val counters = items.map(::routedCounter)
+                        forwardRate = forwardRates.accept(time, counters, overseasExits)
+                        appendSample(forwardTrend, forwardRate)
+                        val count = counters.count { trafficRoute(it.exit, overseasExits) == TrafficRoute.OVERSEAS }
+                        forwardState = when {
+                            overseasExits.isEmpty() -> "请选择海外出口"
+                            forwardRate == null -> "等待连续采样 · $forwardSampledAt"
+                            else -> "$count 条转发连接 · $forwardSampledAt"
+                        }
+                    }
+                }, onFailure = {
                     connections = emptyList()
                     connectionState = when (it) {
                         is java.net.ConnectException -> "无法连接，请确认手机控制器已开启"
@@ -389,8 +503,13 @@ class MainActivity : Activity() {
                         is IllegalStateException -> it.message ?: "快照无效"
                         else -> "读取失败，请检查地址、网络与证书"
                     }
+                    appendRequestLog("Mihomo /connections", httpStatus, connectionState)
+                    connectionState = "${httpStatus?.let { code -> "HTTP $code" } ?: "未取得状态码"} · $connectionState"
+                    resetForward()
+                    if (forwardEnabled) forwardState = connectionState
                 })
                 renderConnections()
+                updateOverview()
             }
         }
     }
@@ -403,7 +522,8 @@ class MainActivity : Activity() {
             box.addView(label("请先连接手机上的 Mihomo 控制器。", 14, muted)); return
         }
         val filtered = connections.filter {
-            (protocol == "全部" || it.optJSONObject("metadata")?.optString("network")?.equals(protocol, true) == true) && it.toString().contains(query, true)
+            (protocol == "全部" || it.optJSONObject("metadata")?.optString("network")?.equals(protocol, true) == true) &&
+                (routeFilter == null || trafficRoute(routedCounter(it).exit, overseasExits) == routeFilter) && it.toString().contains(query, true)
         }
         if (filtered.isEmpty()) { rows.addView(label(if (connections.isEmpty()) "尚无有效连接快照" else "没有匹配的连接", 14, muted)); return }
         filtered.take(150).forEach { item ->
@@ -413,6 +533,8 @@ class MainActivity : Activity() {
             val box = card(rows)
             box.addView(label(host, 16, ink, true)); gap(box, 6)
             box.addView(label("${metadata.optString("network").uppercase()}  ·  $process", 14, mint)); gap(box, 6)
+            val exit = routedCounter(item).exit
+            box.addView(label("${trafficRoute(exit, overseasExits).title} · ${exit ?: "出口未知"}", 14, muted)); gap(box, 6)
             box.addView(label("↓ ${bytes(item.optLong("download").toDouble())}   ↑ ${bytes(item.optLong("upload").toDouble())}", 14, muted))
             box.setOnClickListener {
                 val chains = item.optJSONArray("chains")?.let { array -> (0 until array.length()).joinToString(" → ") { array.optString(it) } } ?: "未知"
@@ -439,53 +561,84 @@ class MainActivity : Activity() {
         val probe = card(); probe.addView(label("HTTPS 连通性", 16, ink, true)); gap(probe, 8)
         probeLabel = label(probeResult, 14, muted); probe.addView(probeLabel); gap(probe)
         probe.addView(button(if (probeBusy) "检查中…" else "检查连接", true) { runProbe() })
+        val logs = card(); logs.addView(label("请求日志 · 最近 100 条", 16, ink, true)); gap(logs, 8)
+        requestLogRows = column(); logs.addView(requestLogRows); renderRequestLogs()
         body.addView(button("分享诊断报告") {
-            val report = "Wiesler Android 0.1.0\n${Date()}\n${diagnosticText()}\nHTTPS：$probeResult\n系统接口累计 RX=${bytes(lastRx.toDouble())} TX=${bytes(lastTx.toDouble())}\nVPN 下系统接口可能重复计量。"
+            val report = "Wiesler Android 0.1.0\n${Date()}\n${diagnosticText()}\nHTTPS：$probeResult\n系统接口累计 RX=${bytes(lastRx.toDouble())} TX=${bytes(lastTx.toDouble())}\nVPN 下系统接口可能重复计量。\n\n最近请求日志\n${requestLogs.joinToString("\n") { it.text() }}"
             startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, report) }, "分享诊断报告"))
         }); gap()
         body.addView(button("关于数据来源") { showScope() })
     }
     private fun showScope() {
-        AlertDialog.Builder(this).setTitle("数据来源").setMessage("实时速率来自 Android 系统接口计数，只在前台采样。VPN 下可能重复计量，不作为套餐账单。\n\n应用流量来自系统使用情况统计，可能延迟。连接列表仅展示 Mihomo 处理的连接。\n\nHTTPS 检查向 www.gstatic.com 发起一次请求。App 不接管 VPN，也不会自动上传数据。").setPositiveButton("知道了", null).show()
+        AlertDialog.Builder(this).setTitle("数据来源").setMessage("全局流量来自 Android 系统接口计数，只在前台采样。VPN 下可能重复计量，不作为套餐账单。\n\n海外转发按你指定的实际出口节点统计，不自动验证节点或目标的地理位置。每秒读取 Mihomo 活跃连接并按连接 ID 差分；首次出现、采样间结束的连接以及最后一段流量可能漏计，属于已观测流量。两张图均保留最近 60 次采样，不能相减当作直连流量。\n\n开关只控制观察，不改变代理路由。后台、失败或重新开启后重建基线；更换控制器或出口重置转发图表和累计。\n\n应用流量来自系统使用情况统计，可能延迟。连接列表仅展示 Mihomo 处理的连接。\n\nHTTPS 检查向 www.gstatic.com 发起一次请求。App 不接管 VPN，也不会自动上传数据。").setPositiveButton("知道了", null).show()
     }
     private fun runProbe() {
         if (probeBusy) return
         probeBusy = true; probeResult = "正在检查…"; probeLabel?.text = probeResult
         worker.execute {
+            var httpStatus: Int? = null
+            var failure: String? = null
             val result = runCatching {
                 val connection = URL("https://www.gstatic.com/generate_204").openConnection() as HttpURLConnection
                 try {
                     connection.connectTimeout = 5000; connection.readTimeout = 5000; connection.instanceFollowRedirects = false; connection.useCaches = false
                     val start = SystemClock.elapsedRealtime(); val code = connection.responseCode
+                    httpStatus = code.takeIf { it in 100..599 }
                     "HTTP $code · ${SystemClock.elapsedRealtime() - start} ms\n${if (code == 204) "HTTPS 请求成功" else "未得到预期 204 响应"}（含建连耗时）"
                 } finally { connection.disconnect() }
-            }.getOrElse { "检查失败：${if (it is java.net.SocketTimeoutException) "超时" else "网络或 TLS 错误"}" }
-            handler.post { probeBusy = false; probeResult = result; if (!isDestroyed && page == 3) render() }
+            }.getOrElse {
+                failure = if (it is java.net.SocketTimeoutException) "超时" else "网络或 TLS 错误"
+                "检查失败：$failure"
+            }
+            handler.post {
+                probeBusy = false; probeResult = result
+                if (!isDestroyed) {
+                    appendRequestLog("HTTPS gstatic 检查", httpStatus, failure)
+                    if (page == 3) render()
+                }
+            }
         }
     }
 
-    private inner class TrendView(context: Context) : View(context) {
+    private fun appendRequestLog(source: String, code: Int?, error: String?) {
+        requestLogs.addFirst(RequestLog(SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()), source, code, error))
+        while (requestLogs.size > 100) requestLogs.removeLast()
+        renderRequestLogs()
+    }
+
+    private fun renderRequestLogs() {
+        val rows = requestLogRows ?: return
+        rows.removeAllViews()
+        if (requestLogs.isEmpty()) rows.addView(label("连接控制器或检查 HTTPS 后显示请求结果", 14, muted))
+        requestLogs.forEach { entry ->
+            rows.addView(label(entry.text(), 14, if (entry.failed) Color.rgb(255, 158, 158) else if (entry.result == "成功") mint else muted).apply { setTextIsSelectable(true) })
+            gap(rows, 8)
+        }
+    }
+
+    private inner class TrendView(context: Context, private val samples: List<Rate?>) : View(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val path = Path()
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             val top = dp(22).toFloat(); val bottom = height - dp(8).toFloat()
             paint.color = line; paint.strokeWidth = dp(1).toFloat()
             repeat(4) { index -> val y = top + (bottom - top) * index / 3; canvas.drawLine(0f, y, width.toFloat(), y, paint) }
-            val max = maxOf(1024.0, trend.filterNotNull().maxOfOrNull { maxOf(it.rx, it.tx) } ?: 0.0)
+            val max = maxOf(1024.0, samples.filterNotNull().maxOfOrNull { maxOf(it.rx, it.tx) } ?: 0.0)
             paint.color = muted; paint.textSize = dp(10).toFloat(); paint.style = Paint.Style.FILL
             canvas.drawText("${bytes(max)}/s", 0f, dp(12).toFloat(), paint)
-            if (trend.none { it != null }) {
+            if (samples.none { it != null }) {
                 paint.textSize = dp(13).toFloat(); canvas.drawText("等待连续采样", dp(12).toFloat(), height / 2f, paint); return
             }
             for (up in listOf(false, true)) {
-                val path = Path(); var drawing = false
-                trend.forEachIndexed { index, rate ->
+                path.reset(); var drawing = false
+                samples.forEachIndexed { index, rate ->
                     if (rate == null) { drawing = false; return@forEachIndexed }
-                    val x = width * (59 - trend.size + 1 + index) / 59f
+                    val x = width * (59 - samples.size + 1 + index) / 59f
                     val y = bottom - ((if (up) rate.tx else rate.rx) / max * (bottom - top)).toFloat()
                     if (drawing) path.lineTo(x, y) else path.moveTo(x, y)
                     drawing = true
-                    if (index == trend.lastIndex) { paint.color = if (up) violet else mint; canvas.drawCircle(x.coerceAtMost(width - dp(3).toFloat()), y, dp(3).toFloat(), paint) }
+                    if (index == samples.lastIndex) { paint.color = if (up) violet else mint; canvas.drawCircle(x.coerceAtMost(width - dp(3).toFloat()), y, dp(3).toFloat(), paint) }
                 }
                 paint.color = if (up) violet else mint; paint.style = Paint.Style.STROKE; paint.strokeWidth = dp(2).toFloat(); canvas.drawPath(path, paint); paint.style = Paint.Style.FILL
             }

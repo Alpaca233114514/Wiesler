@@ -10,7 +10,7 @@ const MAX_BODY: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeError {
-    Authentication,
+    Authentication(u16),
     Timeout,
     Network,
     Http(u16),
@@ -21,7 +21,7 @@ pub enum ProbeError {
 impl std::fmt::Display for ProbeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Authentication => f.write_str("authentication_failed"),
+            Self::Authentication(status) => write!(f, "authentication_failed (HTTP {status})"),
             Self::Timeout => f.write_str("timeout"),
             Self::Network => f.write_str("network_error"),
             Self::Http(status) => write!(f, "http_{status}"),
@@ -32,6 +32,12 @@ impl std::fmt::Display for ProbeError {
 }
 
 impl std::error::Error for ProbeError {}
+
+#[derive(Debug)]
+pub struct ProbeFailure {
+    pub error: ProbeError,
+    pub http_status: Option<u16>,
+}
 
 fn network_error(error: reqwest::Error) -> ProbeError {
     if error.is_timeout() {
@@ -62,28 +68,50 @@ impl Mihomo {
                 .get(self.config.url.join(path).expect("API path")),
         )
         .await
+        .map(|(_, body)| body)
     }
 
-    async fn send(&self, mut request: reqwest::RequestBuilder) -> Result<Vec<u8>, ProbeError> {
+    async fn send(&self, request: reqwest::RequestBuilder) -> Result<(u16, Vec<u8>), ProbeError> {
+        self.send_with_status(request)
+            .await
+            .map_err(|failure| failure.error)
+    }
+
+    async fn send_with_status(
+        &self,
+        mut request: reqwest::RequestBuilder,
+    ) -> Result<(u16, Vec<u8>), ProbeFailure> {
         if let Some(header) = &self.config.authorization {
             request = request.header(AUTHORIZATION, header.clone());
         }
-        let mut response = request.send().await.map_err(network_error)?;
-        match response.status() {
+        let mut response = request.send().await.map_err(|error| ProbeFailure {
+            error: network_error(error),
+            http_status: None,
+        })?;
+        let status = response.status();
+        let failure = |error| ProbeFailure {
+            error,
+            http_status: Some(status.as_u16()),
+        };
+        match status {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-                return Err(ProbeError::Authentication);
+                return Err(failure(ProbeError::Authentication(status.as_u16())));
             }
-            code if !code.is_success() => return Err(ProbeError::Http(code.as_u16())),
+            code if !code.is_success() => return Err(failure(ProbeError::Http(code.as_u16()))),
             _ => {}
         }
         let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| failure(network_error(error)))?
+        {
             if body.len().saturating_add(chunk.len()) > MAX_BODY {
-                return Err(ProbeError::Oversized);
+                return Err(failure(ProbeError::Oversized));
             }
             body.extend_from_slice(&chunk);
         }
-        Ok(body)
+        Ok((status.as_u16(), body))
     }
 
     fn proxy_url(&self, name: &str) -> Result<reqwest::Url, ProbeError> {
@@ -98,7 +126,7 @@ impl Mihomo {
     }
 
     pub async fn proxy(&self, name: &str) -> Result<ProxyInfo, ProbeError> {
-        let bytes = self.send(self.client.get(self.proxy_url(name)?)).await?;
+        let (_, bytes) = self.send(self.client.get(self.proxy_url(name)?)).await?;
         serde_json::from_slice(&bytes).map_err(|_| ProbeError::InvalidSnapshot)
     }
 
@@ -127,7 +155,24 @@ impl Mihomo {
     }
 
     pub async fn snapshot(&self) -> Result<Snapshot, ProbeError> {
-        parse_snapshot(&self.get("connections").await?)
+        self.snapshot_with_status()
+            .await
+            .map(|(_, snapshot)| snapshot)
+            .map_err(|failure| failure.error)
+    }
+
+    pub async fn snapshot_with_status(&self) -> Result<(u16, Snapshot), ProbeFailure> {
+        let (status, body) = self
+            .send_with_status(
+                self.client
+                    .get(self.config.url.join("connections").expect("API path")),
+            )
+            .await?;
+        let snapshot = parse_snapshot(&body).map_err(|error| ProbeFailure {
+            error,
+            http_status: Some(status),
+        })?;
+        Ok((status, snapshot))
     }
 }
 

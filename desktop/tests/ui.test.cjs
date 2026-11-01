@@ -17,7 +17,7 @@ function setup(invoke) {
   get('controller').value='http://127.0.0.1:9090';
   return {get,context,tick:async()=>{const fn=next;next=null;await fn?.();},run:code=>vm.runInContext(code,context)};
 }
-const sample=(time,download,upload=0)=>({observed_at:time,download_total:download,upload_total:upload,connections:[]});
+const sample=(time,download,upload=0)=>({http_status:200,observed_at:time,download_total:download,upload_total:upload,connections:[]});
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 test('rate rebaselines across errors and counter resets',async()=>{
   const queue=[sample(1000,100),sample(2000,1124),new Error('network_error'),sample(4000,5000),sample(5000,1)];
@@ -60,4 +60,29 @@ test('latest traffic sample aligns with now before history fills',async()=>{
   const ui=setup(async()=>queue.shift());ui.run('start()');await flush();await ui.tick();await ui.tick();
   assert.match(ui.get('download').d,/L800,/);
   assert.match(ui.get('upload').d,/L800,/);
+});
+
+test('request log keeps success, forbidden, and timeout distinct after recovery',async()=>{
+  const queue=[sample(1000,0),{message:'authentication_failed (HTTP 403)',http_status:403},new Error('timeout'),sample(4000,1)];
+  const ui=setup(async()=>{const item=queue.shift();if(!item.connections)throw item;return item;});
+  ui.run('start()');await flush();await ui.tick();await ui.tick();await ui.tick();
+  const rows=ui.get('request-log-rows').children;
+  assert.equal(rows.length,4);
+  assert.equal(rows[0].children[2].textContent,'HTTP 200');
+  assert.equal(rows[0].children[3].textContent,'成功');
+  assert.equal(rows[1].children[2].textContent,'未取得状态码');
+  assert.equal(rows[1].children[4].textContent,'timeout');
+  assert.equal(rows[2].children[2].textContent,'HTTP 403');
+  assert.equal(rows[2].children[3].textContent,'失败');
+  assert.equal(rows[2].children[2].className,'http-error');
+});
+
+test('request log is bounded and ignores superseded responses',async()=>{
+  let resolve;const ui=setup(()=>new Promise(r=>resolve=r));
+  ui.run('start()');ui.get('pause').onclick();resolve(sample(1000,1));await flush();
+  assert.equal(ui.get('request-log-rows').children.length,0);
+  ui.run('for(let i=0;i<105;i++)appendRequestLog(200,null)');
+  assert.equal(ui.get('request-log-rows').children.length,100);
+  ui.run('appendRequestLog(null,"<img src=x>")');
+  assert.equal(ui.get('request-log-rows').children[0].children[4].textContent,'<img src=x>');
 });

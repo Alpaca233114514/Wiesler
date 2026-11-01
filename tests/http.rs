@@ -78,8 +78,8 @@ async fn http_gets_use_bearer_header_and_parse_actual_wire_shape() {
 #[tokio::test]
 async fn authentication_errors_bad_json_and_http_failures_are_distinct() {
     for (status, body, expected) in [
-        (401, "private response", ProbeError::Authentication),
-        (403, "private response", ProbeError::Authentication),
+        (401, "private response", ProbeError::Authentication(401)),
+        (403, "private response", ProbeError::Authentication(403)),
         (500, "private response", ProbeError::Http(500)),
         (200, "{", ProbeError::InvalidSnapshot),
         (

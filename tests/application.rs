@@ -225,6 +225,42 @@ fn codex_errors_strip_raw_message_and_reject_embedded_fake_fields() {
 }
 
 #[tokio::test]
+async fn diagnostic_statuses_include_success_http_errors_and_missing_codes() {
+    let root = directory();
+    let codex = root.join("status.log");
+    let dsh = root.join("run-status.jsonl");
+    let db = root.join("status.sqlite3");
+    std::fs::write(&codex, concat!(
+        "2026-11-01T01:00:00.000Z info [orbit-messaging] event=orbit.messaging.stage stage=host.response_headers httpStatus=200 outcome=success\n",
+        "2026-11-01T01:00:01.000Z info [orbit-messaging] event=orbit.messaging.stage stage=host.response_headers httpStatus=403\n",
+        "2026-11-01T01:00:02.000Z warning stream disconnected\n",
+    )).unwrap();
+    let mut dsh_row = call();
+    dsh_row["httpStatus"] = json!(200);
+    std::fs::write(&dsh, format!("{dsh_row}\n")).unwrap();
+    observe(ObserveOptions {
+        database: db.clone(),
+        inputs: vec![(LogKind::Codex, codex), (LogKind::Dsh, dsh)],
+        codex_sockets: false,
+        socket_inputs: vec![],
+        from_end: false,
+        interval: Duration::from_millis(10),
+        polls: Some(1),
+        max_events: 100,
+    })
+    .await
+    .unwrap();
+    let report = diagnostics::report(&db, &[]).unwrap();
+    assert_eq!(report.codex_recent_errors.len(), 2);
+    assert_eq!(report.dsh_recent[0].observation.http_status, Some(200));
+    let markdown = report.markdown();
+    assert!(markdown.contains("HTTP 200 | 成功"));
+    assert!(markdown.contains("HTTP 403 | 失败"));
+    assert!(markdown.contains("未记录 | 失败 | stream_disconnected"));
+    assert!(markdown.contains("status.log:2"));
+}
+
+#[tokio::test]
 async fn import_follow_and_diagnose_are_deduplicated_and_traceable() {
     let root = directory();
     let log = root.join("run-synthetic.jsonl");
