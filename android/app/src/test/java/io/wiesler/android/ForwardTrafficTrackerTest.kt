@@ -4,6 +4,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ForwardTrafficTrackerTest {
+    @Test fun restoredTotalsSurviveFirstSnapshotWithoutBridgingDowntime() {
+        val tracker = ForwardTrafficTracker()
+        val exits = setOf("海外 A")
+        tracker.restoreTotals(700.0, 90.0, exits)
+        assertNull(tracker.accept(90000, listOf(counter(rx = 900000)), exits))
+        assertEquals(700.0, tracker.observedRx, 0.0)
+        assertEquals(Rate(100.0, 10.0), tracker.accept(91000, listOf(counter(rx = 900100, tx = 30)), exits))
+        assertEquals(800.0, tracker.observedRx, 0.0)
+        tracker.accept(92000, emptyList(), setOf("另一个出口"))
+        assertEquals(0.0, tracker.observedRx, 0.0)
+    }
+
     private val selected = setOf("海外 A")
     private fun counter(id: String = "one", rx: Long = 100, tx: Long = 20,
                         exit: String? = "海外 A", start: String = "start") = RoutedCounter(id, start, exit, rx, tx)

@@ -26,6 +26,13 @@ class ForwardTrafficTracker {
     var observedTx = 0.0
         private set
 
+    fun restoreTotals(rx: Double, tx: Double, selected: Set<String>) {
+        reset(clearTotals = true)
+        previousSelection = selected.toSet()
+        observedRx = rx.takeIf { it.isFinite() && it >= 0 } ?: 0.0
+        observedTx = tx.takeIf { it.isFinite() && it >= 0 } ?: 0.0
+    }
+
     fun reset(clearTotals: Boolean = false) {
         previousTime = null
         previous = emptyMap()

@@ -85,14 +85,31 @@ class MainActivity : Activity() {
     private var probeLabel: TextView? = null
     private val requestLogs = ArrayDeque<RequestLog>()
     private var requestLogRows: LinearLayout? = null
+    private var lastPersistedAt = 0L
     private val connectivity get() = getSystemService(ConnectivityManager::class.java)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        page = savedInstanceState?.getInt("page") ?: 0
-        paused = savedInstanceState?.getBoolean("paused") ?: false
+        page = savedInstanceState?.getInt("page") ?: getPreferences(0).getInt("page", 0).coerceIn(0, 3)
+        paused = savedInstanceState?.getBoolean("paused") ?: getPreferences(0).getBoolean("paused", false)
         controller = getPreferences(0).getString("controller", controller) ?: controller
         overseasExits = getPreferences(0).getStringSet("overseasExits", emptySet())?.toSet() ?: emptySet()
+        forwardEnabled = getPreferences(0).getBoolean("forwardEnabled", false)
+        controllerEnabled = getPreferences(0).getBoolean("controllerEnabled", getPreferences(0).contains("controller"))
+        secret = runCatching { ControllerSecretStore(getPreferences(0)).read(controller) }.getOrElse {
+            controllerEnabled = false
+            Toast.makeText(this, "无法解密控制器密钥，请重新配置", Toast.LENGTH_LONG).show()
+            ""
+        }
+        if (controllerEnabled) connectionState = "等待重新连接"
+        getPreferences(0).getString("history", null)?.let { stored ->
+            runCatching { SavedHistory.decode(stored) }.onSuccess { history ->
+                trend.addAll(history.trend); forwardTrend.addAll(history.forwardTrend)
+                forwardRates.restoreTotals(history.rx, history.tx, overseasExits)
+                requestLogs.addAll(history.logs)
+                sampledAt = history.sampledAt; forwardSampledAt = history.forwardSampledAt
+            }.onFailure { Toast.makeText(this, "历史记录读取失败", Toast.LENGTH_LONG).show() }
+        }
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
         root.setOnApplyWindowInsetsListener { v, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
@@ -124,12 +141,14 @@ class MainActivity : Activity() {
         super.onResume(); foreground = true; rates.reset(); lastRate = null; appendSample(trend, null)
         resetForward()
         handler.removeCallbacks(tick); handler.post(tick)
+        if (controllerEnabled && !controllerBusy) fetchConnections()
         if (page == 1) showApps()
     }
 
     override fun onPause() {
         foreground = false; controllerGeneration++; handler.removeCallbacks(tick); rates.reset(); lastRate = null
         resetForward()
+        persistState()
         super.onPause()
     }
 
@@ -145,12 +164,22 @@ class MainActivity : Activity() {
                 lastRx = TrafficStats.getTotalRxBytes(); lastTx = TrafficStats.getTotalTxBytes()
                 lastRate = rates.accept(CounterSample(SystemClock.elapsedRealtime(), lastRx, lastTx))
                 appendSample(trend, lastRate)
-                sampledAt = SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date())
+                sampledAt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.ROOT).format(Date())
             }
             updateOverview()
             if (controllerEnabled && (forwardEnabled || page == 2) && !controllerBusy) fetchConnections()
+            if (SystemClock.elapsedRealtime() - lastPersistedAt >= 5000) persistState()
             handler.postDelayed(this, 1000)
         }
+    }
+
+    private fun persistState() {
+        val history = SavedHistory(trend.toList(), forwardTrend.toList(), forwardRates.observedRx,
+            forwardRates.observedTx, requestLogs.toList(), sampledAt, forwardSampledAt)
+        getPreferences(0).edit().putInt("page", page).putBoolean("paused", paused)
+            .putBoolean("forwardEnabled", forwardEnabled).putStringSet("overseasExits", overseasExits)
+            .putString("history", history.encode()).apply()
+        lastPersistedAt = SystemClock.elapsedRealtime()
     }
 
     private fun appendSample(samples: MutableList<Rate?>, rate: Rate?) {
@@ -208,7 +237,7 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(8)); minHeight = dp(56)
                 if (page == index) background = shape(Color.rgb(34, 51, 48), 14)
                 isClickable = true; isFocusable = true
-                setOnClickListener { page = index; render(); scroll.scrollTo(0, 0) }
+                setOnClickListener { page = index; render(); scroll.scrollTo(0, 0); persistState() }
             }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(3); marginEnd = dp(3) })
         }
         when (page) { 0 -> showOverview(); 1 -> showApps(); 2 -> showConnections(); 3 -> showDiagnostics() }
@@ -218,7 +247,7 @@ class MainActivity : Activity() {
         heading("YOUR NETWORK, IN FOCUS", "手机网络", "此刻的流量与连接")
         val graphCard = card()
         graphCard.addView(monitorSwitch("全局流量", !paused) { enabled ->
-            paused = !enabled; rates.reset(); lastRate = null; appendSample(trend, null); updateOverview()
+            paused = !enabled; rates.reset(); lastRate = null; appendSample(trend, null); updateOverview(); persistState()
         })
         val metrics = row()
         download = label("—", 18, mint, true); upload = label("—", 18, violet, true)
@@ -229,7 +258,7 @@ class MainActivity : Activity() {
 
         val forwardCard = card()
         forwardCard.addView(monitorSwitch("海外转发流量", forwardEnabled) { enabled ->
-            forwardEnabled = enabled; controllerGeneration++; resetForward(); updateOverview()
+            forwardEnabled = enabled; controllerGeneration++; resetForward(); updateOverview(); persistState()
         })
         val forwardValues = row()
         forwardMetrics = label("↓ —", 18, mint, true); forwardUpload = label("↑ —", 18, violet, true)
@@ -285,9 +314,11 @@ class MainActivity : Activity() {
     }
 
     private fun saveExits(selected: Set<String>) {
+        if (selected == overseasExits) return
         overseasExits = selected.toSet()
         getPreferences(0).edit().putStringSet("overseasExits", overseasExits).apply()
         controllerGeneration++; resetForward(clearHistory = true); render()
+        persistState()
     }
 
     private fun bytes(value: Double): String {
@@ -398,7 +429,7 @@ class MainActivity : Activity() {
         controllerStatus = label(connectionState, 14, muted); source.addView(controllerStatus); gap(source)
         source.addView(button("配置手机控制器") { configureController() })
         val search = EditText(this).apply {
-            hint = "搜索目标、应用、规则…"; setTextColor(ink); setHintTextColor(muted); textSize = 14f
+            hint = "搜索目标、端口、应用、规则…"; setTextColor(ink); setHintTextColor(muted); textSize = 14f
             isSingleLine = true; setText(query); setPadding(dp(14), dp(10), dp(14), dp(10)); background = shape(surface, 12)
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -423,10 +454,15 @@ class MainActivity : Activity() {
         val content = column().apply { setPadding(dp(24), dp(12), dp(24), 0) }
         content.addView(label("填写手机 Clash Meta 中的 External Controller 地址。", 13, muted))
         val address = EditText(this).apply { setText(controller); hint = "http://127.0.0.1:9090"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI; isSingleLine = true }
-        val password = EditText(this).apply { hint = "Secret（如有，仅本次使用）"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD; isSingleLine = true; importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO }
+        val password = EditText(this).apply { hint = "Secret（如有，加密保存在本机）"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD; setText(secret); isSingleLine = true; importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO; isSaveEnabled = false }
         content.addView(address); content.addView(password)
         val dialog = AlertDialog.Builder(this).setTitle("连接手机控制器").setView(content).setNegativeButton("取消", null).setNeutralButton("断开") { _, _ ->
+            if (!runCatching { ControllerSecretStore(getPreferences(0)).save(controller, "", false) }.getOrDefault(false)) {
+                Toast.makeText(this, "断开设置保存失败，请重试", Toast.LENGTH_LONG).show()
+                return@setNeutralButton
+            }
             controllerGeneration++; controllerEnabled = false; secret = ""; connections = emptyList(); connectionState = "已断开"; resetForward(); render()
+            persistState()
         }.setPositiveButton("连接", null).create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
@@ -437,12 +473,17 @@ class MainActivity : Activity() {
                     address.error = "使用本机 HTTP 或 HTTPS 根地址，不包含密钥"; return@setOnClickListener
                 }
                 val changedController = controller != value
+                val newSecret = password.text.toString()
+                if (!runCatching { ControllerSecretStore(getPreferences(0)).save(value, newSecret, true) }.getOrDefault(false)) {
+                    password.error = "无法安全保存连接设置，请重试"; return@setOnClickListener
+                }
                 controller = value; secret = password.text.toString(); controllerEnabled = true; controllerGeneration++
                 if (changedController) overseasExits = emptySet()
-                resetForward(clearHistory = true)
+                resetForward(clearHistory = changedController)
                 getPreferences(0).edit().putString("controller", controller).apply()
                 getPreferences(0).edit().putStringSet("overseasExits", overseasExits).apply()
                 connections = emptyList(); connectionState = "连接中…"; dialog.dismiss(); render()
+                persistState()
                 if (!controllerBusy) fetchConnections()
             }
         }
@@ -481,7 +522,7 @@ class MainActivity : Activity() {
                 if (isDestroyed || !foreground || generation != controllerGeneration) return@post
                 result.fold(onSuccess = { (time, items) ->
                     connections = items
-                    forwardSampledAt = SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date())
+                    forwardSampledAt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.ROOT).format(Date())
                     connectionState = "● 已连接 · HTTP $httpStatus · ${items.size} 条连接 · $forwardSampledAt"
                     appendRequestLog("Mihomo /connections", httpStatus, null)
                     if (forwardEnabled) {
@@ -491,6 +532,7 @@ class MainActivity : Activity() {
                         val count = counters.count { trafficRoute(it.exit, overseasExits) == TrafficRoute.OVERSEAS }
                         forwardState = when {
                             overseasExits.isEmpty() -> "请选择海外出口"
+                            count == 0 && items.isNotEmpty() -> "所选出口未匹配当前连接，请核对节点名称"
                             forwardRate == null -> "等待连续采样 · $forwardSampledAt"
                             else -> "$count 条转发连接 · $forwardSampledAt"
                         }
@@ -529,21 +571,37 @@ class MainActivity : Activity() {
         filtered.take(150).forEach { item ->
             val metadata = item.optJSONObject("metadata") ?: JSONObject()
             val host = metadata.optString("host").ifBlank { metadata.optString("destinationIP", "未知目标") }
+            val sourcePort = connectionPort(metadata, "sourcePort")
+            val destinationPort = connectionPort(metadata, "destinationPort")
+            val source = connectionEndpoint(metadata.optString("sourceIP"), sourcePort)
+            val destination = connectionEndpoint(host, destinationPort)
             val process = metadata.optString("process").ifBlank { metadata.optString("type", "未知应用") }
             val box = card(rows)
-            box.addView(label(host, 16, ink, true)); gap(box, 6)
+            box.addView(label(destination, 16, ink, true)); gap(box, 6)
             box.addView(label("${metadata.optString("network").uppercase()}  ·  $process", 14, mint)); gap(box, 6)
+            box.addView(label("源端口 $sourcePort  →  目标端口 $destinationPort", 14, ink)); gap(box, 6)
+            box.addView(label("源地址：$source", 14, muted)); gap(box, 6)
             val exit = routedCounter(item).exit
             box.addView(label("${trafficRoute(exit, overseasExits).title} · ${exit ?: "出口未知"}", 14, muted)); gap(box, 6)
             box.addView(label("↓ ${bytes(item.optLong("download").toDouble())}   ↑ ${bytes(item.optLong("upload").toDouble())}", 14, muted))
             box.setOnClickListener {
                 val chains = item.optJSONArray("chains")?.let { array -> (0 until array.length()).joinToString(" → ") { array.optString(it) } } ?: "未知"
-                val detail = "应用：$process\n目标：$host:${metadata.optString("destinationPort")}\n源：${metadata.optString("sourceIP")}:${metadata.optString("sourcePort")}\n协议：${metadata.optString("network")}\n规则：${item.optString("rule")} ${item.optString("rulePayload")}\n代理链：$chains\n开始：${item.optString("start")}\nID：${item.optString("id")}"
+                val destinationIp = connectionEndpoint(metadata.optString("destinationIP"), destinationPort)
+                val detail = "应用：$process\n目标：$destination\n目标 IP：$destinationIp\n源：$source\n源端口：$sourcePort\n目标端口：$destinationPort\n协议：${metadata.optString("network")}\n规则：${item.optString("rule")} ${item.optString("rulePayload")}\n代理链：$chains\n开始：${item.optString("start")}\nID：${item.optString("id")}"
                 AlertDialog.Builder(this).setTitle("连接详情").setMessage(detail).setPositiveButton("关闭", null).show()
             }
             box.isFocusable = true
         }
         if (filtered.size > 150) rows.addView(label("显示前 150 条，请搜索缩小范围。", 12, muted))
+    }
+
+    private fun connectionPort(metadata: JSONObject, key: String): String =
+        metadata.optString(key).toIntOrNull()?.takeIf { it in 0..65535 }?.toString() ?: "未知"
+
+    private fun connectionEndpoint(address: String, port: String): String {
+        val host = address.takeUnless { it.isBlank() || it == "null" } ?: "未知地址"
+        val formatted = if (host.contains(':') && !host.startsWith('[')) "[$host]" else host
+        return "$formatted:$port"
     }
 
     private fun diagnosticText(): String {
@@ -601,9 +659,10 @@ class MainActivity : Activity() {
     }
 
     private fun appendRequestLog(source: String, code: Int?, error: String?) {
-        requestLogs.addFirst(RequestLog(SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()), source, code, error))
+        requestLogs.addFirst(RequestLog(SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date()), source, code, error))
         while (requestLogs.size > 100) requestLogs.removeLast()
         renderRequestLogs()
+        if (!foreground) persistState()
     }
 
     private fun renderRequestLogs() {
