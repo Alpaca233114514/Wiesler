@@ -35,6 +35,16 @@ class MainActivity : Activity() {
     private val violet = Color.rgb(174, 163, 236)
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
+    private val lossWorker = Executors.newSingleThreadExecutor()
+    private val lossWindow = PacketLossWindow()
+    private var lossTarget = "1.1.1.1"
+    private var lossRunning = false
+    private var lossGeneration = 0
+    private var lossProbe: IcmpProbe? = null
+    private var lossLabel: TextView? = null
+    private var lossStatusLabel: TextView? = null
+    private var lossStatus = "未开启"
+    private val lossTick = Runnable { sampleLoss() }
     private val rates = RateTracker()
     private val trend = ArrayList<Rate?>()
     private val forwardRates = ForwardTrafficTracker()
@@ -92,6 +102,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         page = savedInstanceState?.getInt("page") ?: getPreferences(0).getInt("page", 0).coerceIn(0, 3)
         paused = savedInstanceState?.getBoolean("paused") ?: getPreferences(0).getBoolean("paused", false)
+        lossTarget = getPreferences(0).getString("lossTarget", "1.1.1.1") ?: "1.1.1.1"
         controller = getPreferences(0).getString("controller", controller) ?: controller
         overseasExits = getPreferences(0).getStringSet("overseasExits", emptySet())?.toSet() ?: emptySet()
         forwardEnabled = getPreferences(0).getBoolean("forwardEnabled", false)
@@ -143,16 +154,19 @@ class MainActivity : Activity() {
         handler.removeCallbacks(tick); handler.post(tick)
         if (controllerEnabled && !controllerBusy) fetchConnections()
         if (page == 1) showApps()
+        if (page == 0 || page == 3) render()
     }
 
     override fun onPause() {
         foreground = false; controllerGeneration++; handler.removeCallbacks(tick); rates.reset(); lastRate = null
         resetForward()
+        if (lossRunning) stopLoss("已进入后台，监控停止")
         persistState()
         super.onPause()
     }
 
     override fun onDestroy() {
+        lossProbe?.cancel(); lossWorker.shutdownNow()
         worker.shutdownNow(); handler.removeCallbacksAndMessages(null); secret = ""
         super.onDestroy()
     }
@@ -231,7 +245,7 @@ class MainActivity : Activity() {
         download = null; upload = null; chart = null; status = null; networkText = null; totalText = null
         forwardChart = null; forwardMetrics = null; forwardUpload = null; forwardStatus = null; forwardTotal = null
         usageRows = null; connectionRows = null; controllerStatus = null; probeLabel = null
-        requestLogRows = null
+        requestLogRows = null; lossLabel = null; lossStatusLabel = null
         listOf("◉\n概览", "▦\n应用", "⇄\n连接", "◎\n诊断").forEachIndexed { index, title ->
             nav.addView(label(title, 13, if (page == index) mint else muted, page == index).apply {
                 gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(8)); minHeight = dp(56)
@@ -274,6 +288,7 @@ class MainActivity : Activity() {
         forwardCard.addView(actions)
         gap(forwardCard, 8)
         forwardCard.addView(button("查看转发连接") { routeFilter = TrafficRoute.OVERSEAS; page = 2; render(); scroll.scrollTo(0, 0) })
+        showPacketLoss()
         val networkCard = card()
         networkCard.addView(label("当前网络", 14, muted)); gap(networkCard, 8)
         networkText = label("读取中", 18, ink, true); networkCard.addView(networkText)
@@ -616,17 +631,63 @@ class MainActivity : Activity() {
         val info = card(); info.addView(label("系统网络快照", 16, ink, true)); gap(info)
         info.addView(label(diagnosticText(), 14, muted).apply { setTextIsSelectable(true) })
         info.addView(button("刷新网络状态") { render() })
+        showPacketLoss()
         val probe = card(); probe.addView(label("HTTPS 连通性", 16, ink, true)); gap(probe, 8)
         probeLabel = label(probeResult, 14, muted); probe.addView(probeLabel); gap(probe)
         probe.addView(button(if (probeBusy) "检查中…" else "检查连接", true) { runProbe() })
         val logs = card(); logs.addView(label("请求日志 · 最近 100 条", 16, ink, true)); gap(logs, 8)
         requestLogRows = column(); logs.addView(requestLogRows); renderRequestLogs()
         body.addView(button("分享诊断报告") {
-            val report = "Wiesler Android 0.1.0\n${Date()}\n${diagnosticText()}\nHTTPS：$probeResult\n系统接口累计 RX=${bytes(lastRx.toDouble())} TX=${bytes(lastTx.toDouble())}\nVPN 下系统接口可能重复计量。\n\n最近请求日志\n${requestLogs.joinToString("\n") { it.text() }}"
+            val report = "Wiesler Android 0.1.0\n${Date()}\n${diagnosticText()}\nICMP 目标：$lossTarget\n${lossWindow.text()}\n$lossStatus\nHTTPS：$probeResult\n系统接口累计 RX=${bytes(lastRx.toDouble())} TX=${bytes(lastTx.toDouble())}\nVPN 下系统接口可能重复计量。\n\n最近请求日志\n${requestLogs.joinToString("\n") { it.text() }}"
             startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, report) }, "分享诊断报告"))
         }); gap()
         body.addView(button("关于数据来源") { showScope() })
     }
+    private fun showPacketLoss() {
+        val box = card(); box.addView(label("ICMP 丢包率 · 最近 60 次探测", 17, ink, true)); gap(box, 8)
+        val address = EditText(this).apply {
+            setText(lossTarget); hint = "目标 IPv4"; contentDescription = "ICMP 目标 IPv4"
+            inputType = InputType.TYPE_CLASS_PHONE; isSingleLine = true; isEnabled = !lossRunning
+        }
+        box.addView(address); gap(box, 8)
+        lossLabel = label(lossWindow.text(), 17, mint, true); box.addView(lossLabel)
+        lossStatusLabel = label(lossStatus, 14, muted); box.addView(lossStatusLabel); gap(box, 8)
+        box.addView(button(if (lossRunning) "停止监控" else "开始监控", true) {
+            if (lossRunning) { stopLoss("已停止 · 保留最后结果"); render() }
+            else {
+                val value = address.text.toString().trim()
+                if (!validPingTarget(value)) address.error = "请输入单播 IPv4 地址"
+                else {
+                    lossTarget = value; getPreferences(0).edit().putString("lossTarget", value).apply()
+                    lossGeneration++; lossWindow.clear(); lossRunning = true; lossStatus = "$lossTarget · 正在探测…"
+                    render(); sampleLoss()
+                }
+            }
+        }); gap(box, 8)
+        box.addView(label("系统路由 · 每次完成后间隔 1 秒，超时 2 秒。仅测目标 ICMP 回包，不代表代理业务丢包率。", 14, muted))
+    }
+
+    private fun stopLoss(message: String) {
+        lossRunning = false; lossGeneration++; handler.removeCallbacks(lossTick); lossProbe?.cancel(); lossProbe = null
+        lossStatus = message; lossStatusLabel?.text = message
+    }
+
+    private fun sampleLoss() {
+        if (!foreground || !lossRunning) return
+        val generation = lossGeneration; val address = lossTarget
+        val probe = IcmpProbe(); lossProbe = probe
+        lossWorker.execute {
+            val result = probe.run(address)
+            handler.post {
+                if (isDestroyed || !foreground || !lossRunning || generation != lossGeneration) return@post
+                lossProbe = null; lossWindow.add(result)
+                lossStatus = "$address · ${SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date())} · ${result.message}"
+                lossLabel?.text = lossWindow.text(); lossStatusLabel?.text = lossStatus
+                handler.postDelayed(lossTick, 1000)
+            }
+        }
+    }
+
     private fun showScope() {
         AlertDialog.Builder(this).setTitle("数据来源").setMessage("全局流量来自 Android 系统接口计数，只在前台采样。VPN 下可能重复计量，不作为套餐账单。\n\n海外转发按你指定的实际出口节点统计，不自动验证节点或目标的地理位置。每秒读取 Mihomo 活跃连接并按连接 ID 差分；首次出现、采样间结束的连接以及最后一段流量可能漏计，属于已观测流量。两张图均保留最近 60 次采样，不能相减当作直连流量。\n\n开关只控制观察，不改变代理路由。后台、失败或重新开启后重建基线；更换控制器或出口重置转发图表和累计。\n\n应用流量来自系统使用情况统计，可能延迟。连接列表仅展示 Mihomo 处理的连接。\n\nHTTPS 检查向 www.gstatic.com 发起一次请求。App 不接管 VPN，也不会自动上传数据。").setPositiveButton("知道了", null).show()
     }

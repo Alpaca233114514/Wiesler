@@ -2,3 +2,5 @@
 .settings{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px 23px;margin-bottom:20px}.settings input{flex:1;min-width:240px}.settings select{max-width:100%}.report{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8;padding:0 23px 23px;font:12px/1.8 Consolas,"Microsoft YaHei",monospace}.axis{overflow-wrap:anywhere;line-height:1.5;padding-right:8px}.metrics h2{font-size:25px}
 
 .request-log{margin:22px 0}.request-log .table-wrap{max-height:300px}.http-error{color:#ff9e9e}
+
+.packet-loss{margin-bottom:22px}.loss-values{display:flex;align-items:center;gap:24px;flex-wrap:wrap;padding:0 23px}.loss-values strong{font-size:30px;color:#8bddc2}.packet-loss .settings{margin-bottom:0}

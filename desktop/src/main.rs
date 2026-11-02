@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 mod commands;
+mod packet_loss;
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 
 fn data_root() -> PathBuf {
@@ -80,7 +81,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::snapshot,
             commands::sessions,
-            commands::diagnose
+            commands::diagnose,
+            packet_loss::ping
         ])
         .setup(|app| {
             let data_dir = data_root().join("WebView2");
