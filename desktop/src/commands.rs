@@ -35,7 +35,7 @@ impl From<String> for SnapshotError {
 
 #[tauri::command]
 pub async fn snapshot(controller: String) -> Result<LiveSnapshot, SnapshotError> {
-    let secret = std::env::var("WIESLER_MIHOMO_SECRET").ok();
+    let secret = wiesler::config::controller_secret(&controller);
     let config = ControllerConfig::new(&controller, secret.as_deref(), Duration::from_secs(3))
         .map_err(|e| e.to_string())?;
     let probe = Mihomo::new(config).map_err(|_| "无法初始化控制器客户端".to_string())?;
@@ -53,6 +53,15 @@ pub async fn snapshot(controller: String) -> Result<LiveSnapshot, SnapshotError>
         upload_total: data.upload_total,
         download_total: data.download_total,
     })
+}
+
+#[tauri::command]
+pub async fn system_snapshot() -> Result<wiesler::sockets::SocketSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        wiesler::sockets::collect_system().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "读取系统连接失败".to_string())?
 }
 
 #[tauri::command]

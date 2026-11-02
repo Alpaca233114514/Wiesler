@@ -3,31 +3,72 @@
   const $ = id => document.getElementById(id), M = window.StudioModel;
   const svgNS = 'http://www.w3.org/2000/svg';
   const invoke = window.__TAURI__?.core?.invoke;
-  let mode = 'demo', frames = [], current = null, selected = 'browser-web', tab = 'overview';
+  let mode = 'live', frames = [], current = null, selected = null, tab = 'overview';
   let frozen = false, replay = null, timer, generation = 0, demoTick = 24, liveBusy = false;
+  let collecting = false, activeController = '', view = 'graph', rebaseline = false;
+  let systemCurrent = null, systemError = null, systemBusy = false, systemTimer, controllerFrame = null;
+  let discovering = false, scanPromise = null, discoveryMessage = '';
   let scale = 1, pan = {x:0,y:0}, positions = new Map(), drag = null, ignoreClick = false;
   const text = (tag, content, cls) => {const el=document.createElement(tag);el.textContent=content;if(cls)el.className=cls;return el;};
   const svg = (tag, attrs = {}) => {const el=document.createElementNS(svgNS,tag);for(const [k,v] of Object.entries(attrs))el.setAttribute(k,v);return el;};
   function shown() {return replay || current;}
   function visible() {
-    const q=$('flow-search').value.trim().toLowerCase(), protocol=$('flow-protocol').value;
-    return (shown()?.flows || []).filter(f => (!protocol || protocol===f.protocol) && [f.app,f.host,f.destination,f.source,f.route].some(v=>v.toLowerCase().includes(q)));
+    const q=$('flow-search').value.trim().toLowerCase(), protocol=$('flow-protocol').value, source=$('flow-source').value;
+    return (shown()?.flows || []).filter(f => (!source || (source==='system'?f.origin==='system':f.routing===source)) && (!protocol || protocol===f.protocol) && [f.app,f.host,f.destination,f.source,f.route].some(v=>v.toLowerCase().includes(q)));
   }
   function accept(next) {
     current=next;frames.push(next);if(frames.length>60)frames.shift();
     $('snapshot-count').textContent=`${frames.length} 次快照`;
+    renderMonitor();renderStatus();
     if(!frozen && !replay) render();
   }
+  function renderStatus() {
+    $('source-state').textContent = mode==='demo' ? '演示数据' : discovering ? '正在扫描本机控制器…' : current?.error ? `读取失败：${current.error}` : !collecting ? (current ? '已暂停 · 保留最后快照' : discoveryMessage || '尚未连接') : document.hidden ? '窗口隐藏 · 采集暂停' : activeController ? (controllerFrame ? '实时 · Mihomo' : '正在连接代理控制器…') : discoveryMessage || '本机连接采集中';
+    $('system-state').textContent=mode==='demo'?'':systemError?`系统连接：${systemError}`:systemCurrent?`系统 TCP · ${systemCurrent.sockets.length} 条`:'正在读取系统连接…';
+    $('discover').disabled=discovering;
+    $('controller-address').textContent=activeController;
+    $('source-state').hidden=false;$('statusbar').hidden=false;
+    $('capture-state').textContent = replay ? `${frozen?'已冻结':'回放中'} · ${mode==='demo'||collecting&&!document.hidden?'采集继续':'采集暂停'}` : '';
+    $('capture-toggle').disabled=mode!=='live'||!invoke;
+    $('capture-toggle').textContent=collecting?'暂停采集':'恢复采集';
+  }
+  function renderMonitor() {
+    const f=current, valid=f&&!f.error;
+    $('monitor-count').textContent=f?String(f.flows.length):'—';
+    $('monitor-routing').textContent=f?`直连 ${f.flows.filter(c=>c.routing==='direct').length} · 转发 ${f.flows.filter(c=>c.routing==='proxy').length} · 系统 ${f.flows.filter(c=>c.origin==='system').length}`:'等待采样';
+    $('monitor-time').textContent=f?`${time(f.time)} · ${mode==='demo'?'演示':f.error?'采集异常':'最近采样'}`:'尚无采样';
+    $('monitor-rx').textContent=valid?f.rx==null?'等待差分':M.bytes(f.rx):'—';
+    $('monitor-tx').textContent=valid?f.tx==null?'等待差分':M.bytes(f.tx):'—';
+    $('monitor-download').textContent=valid?`累计 ${M.bytes(f.download)}`:'等待有效快照';
+    $('monitor-upload').textContent=valid?`累计 ${M.bytes(f.upload)}`:'等待有效快照';
+    const max=Math.max(1,...frames.flatMap(f=>[f.rx||0,f.tx||0]));
+    for(const direction of ['rx','tx']){
+      let connected=false;
+      const path=frames.map((f,i)=>{if(f[direction]==null){connected=false;return '';}
+        const command=connected?'L':'M';connected=true;
+        return `${command}${(60-frames.length+i)*800/59},${150-f[direction]/max*140}`;}).join(' ');
+      $(`trend-${direction}`).setAttribute('d',path);
+    }
+    $('trend-scale').textContent=`峰值 ${M.bytes(max)}/s`;
+  }
+  function selectView(next) {
+    view=next;
+    for(const name of ['graph','monitor','diagnostics','settings']){
+      $(`view-${name}`).classList.toggle('active',name===view);
+      $(`view-${name}`).setAttribute('aria-pressed',String(name===view));
+    }
+    $('graph-view').hidden=view!=='graph';$('monitor-view').hidden=view!=='monitor';$('diagnostics').hidden=view!=='diagnostics';$('settings').hidden=view!=='settings';
+    if(view==='graph')render();
+  }
+  for(const name of ['graph','monitor','diagnostics','settings'])$(`view-${name}`).onclick=()=>selectView(name);
   function render() {
-    const flows=visible(), view=shown();
+    const flows=visible();
     if(!flows.some(f=>f.id===selected))selected=flows[0]?.id || null;
     $('flow-count').textContent=String(flows.length);
-    $('source-state').textContent = mode==='demo' ? '演示数据' : view?.error || (view ? '实时 · Mihomo' : '等待控制器');
-    $('statusbar').hidden=mode==='demo'&&!replay;
-    $('source-state').hidden=mode==='demo';
-    $('capture-state').textContent = replay ? (frozen ? '已冻结 · 采集继续' : '回放中 · 采集继续') : '';
+    $('freeze').disabled=!current;$('timeline').disabled=!frames.length;
+    renderStatus();
     $('timeline').max=Math.max(0,frames.length-1);
-    $('timeline').value=replay ? Math.max(0,frames.indexOf(replay)) : frames.length-1;
+    $('timeline').value=replay ? Math.max(0,frames.indexOf(replay)) : Math.max(0,frames.length-1);
     $('frame-time').textContent=replay ? time(replay.time) : '现在';
     renderGraph(flows);renderFlows(flows);renderInspector(flows.find(f=>f.id===selected));
   }
@@ -117,40 +158,98 @@
     const body=$('inspect-content');body.replaceChildren();
     if(!f){body.append(text('p','点击节点、连线或会话，查看对应证据。','empty-detail'));return;}
     if(tab==='raw'){
-      body.append(text('pre',JSON.stringify(f.raw,null,2)));
+      body.append(text('pre',JSON.stringify(f.system?{controller:f.raw,system:f.system}:f.raw,null,2)));
       const details=document.createElement('details'),summary=text('summary','数据包');details.append(summary,text('p','当前来源为连接快照，尚未接入原始数据包。','empty-detail'));body.append(details);return;
     }
     if(tab==='events'){
-      const events=[{time:new Date(f.start).getTime(),text:'控制器报告的会话开始',evidence:`连接 ${f.id}`},...(shown()?.events || []).filter(e=>e.id===f.id)];
+      const events=[{time:f.origin==='system'?shown().time:new Date(f.start).getTime(),text:f.origin==='system'?'系统 TCP 连接快照':'控制器报告的会话开始',evidence:`连接 ${f.id}`},...(shown()?.events || []).filter(e=>e.id===f.id)];
       for(const e of events){const item=text('div','',`event-item ${e.level || ''}`);item.append(text('time',Number.isFinite(e.time)?time(e.time):'时间未知'),text('p',e.text),text('p',e.evidence,'endpoint'));body.append(item);}return;
     }
     const dl=document.createElement('dl');
-    for(const [k,v] of Object.entries({'应用':`${f.app} · PID ${f.pid}`,'源地址':f.source,'出口':f.route,'匹配规则':f.rule,'观测状态':f.rx===null?'等待连续快照':f.rx+f.tx>0?'有流量增量':'本次无流量增量'})){dl.append(text('dt',k),text('dd',v));}body.append(dl);
+    for(const [k,v] of Object.entries({'来源':f.origin==='system'?'系统 TCP（路由待确认）':f.routing==='direct'?'Mihomo · DIRECT 直连':'Mihomo · '+(f.routing==='proxy'?'代理转发':'路由待确认'),'应用':`${f.app} · PID ${f.pid}`,'源地址':f.source,'出口':f.route,'匹配规则':f.rule,'观测状态':f.origin==='system'?'已建立 · 无逐连接流量计数':f.rx===null?'等待连续快照':f.rx+f.tx>0?'有流量增量':'本次无流量增量'})){dl.append(text('dt',k),text('dd',v));}body.append(dl);
     const pair=text('div','','traffic-pair');
     for(const [label,v] of [['累计下载',f.download],['累计上传',f.upload]]){const cell=document.createElement('div');cell.append(text('span',label),text('strong',M.bytes(v)));pair.append(cell);}body.append(pair);
   }
   document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;document.querySelectorAll('[data-tab]').forEach(n=>{n.classList.toggle('active',n===b);n.setAttribute('aria-selected',String(n===b));});renderInspector(visible().find(f=>f.id===selected));});
-  $('flow-search').oninput=render;$('flow-protocol').onchange=render;
+  $('flow-search').oninput=render;$('flow-protocol').onchange=render;$('flow-source').onchange=render;
   function unfreeze(){frozen=false;replay=null;$('freeze').textContent='冻结';render();}
-  $('freeze').onclick=()=>{if(frozen||replay){unfreeze();return;}frozen=true;replay=current;$('freeze').textContent='继续';render();};
+  $('freeze').onclick=()=>{if(!current)return;if(frozen||replay){unfreeze();return;}frozen=true;replay=current;$('freeze').textContent='继续';render();};
   $('timeline').oninput=()=>{replay=frames[Number($('timeline').value)] || null;frozen=false;$('freeze').textContent='继续';render();};
   $('now').onclick=unfreeze;
-  function reset(next){generation++;clearTimeout(timer);mode=next;frames=[];current=null;replay=null;frozen=false;positions.clear();$('freeze').textContent='冻结';$('snapshot-count').textContent='0 次快照';$('demo').classList.toggle('active',next==='demo');$('live').classList.toggle('active',next==='live');$('controller-form').hidden=next!=='live';render();}
+  function reset(next){
+    generation++;clearTimeout(timer);clearTimeout(systemTimer);collecting=next==='live'&&!!invoke;
+    discovering=false;discoveryMessage='';rebaseline=false;activeController='';mode=next;
+    frames=[];current=null;controllerFrame=null;systemCurrent=null;systemError=null;replay=null;frozen=false;positions.clear();
+    $('freeze').textContent='冻结';$('snapshot-count').textContent='0 次快照';
+    $('demo').classList.toggle('active',next==='demo');$('live').classList.toggle('active',next==='live');
+    $('controller-tools').hidden=next!=='live';renderMonitor();render();
+    if(collecting)pollSystem(generation);
+  }
+  async function pollSystem(token){
+    if(token!==generation||mode!=='live'||!collecting||document.hidden)return;
+    if(systemBusy){systemTimer=setTimeout(()=>pollSystem(token),250);return;}
+    systemBusy=true;
+    try{
+      const data=await invoke('system_snapshot');if(token!==generation||document.hidden)return;
+      systemCurrent=data;systemError=null;
+    }catch(error){if(token!==generation||document.hidden)return;systemCurrent=null;systemError=error?.message||String(error);}
+    finally{
+      systemBusy=false;
+      if(token===generation&&mode==='live'&&collecting&&!document.hidden){
+        if(!activeController||!controllerFrame||controllerFrame.error)accept(M.mergeSources(controllerFrame,systemCurrent,systemError));
+        renderStatus();systemTimer=setTimeout(()=>pollSystem(token),3000);
+      }
+    }
+  }
   function demoStep(){if(mode!=='demo'||document.hidden)return;const t=Date.UTC(2026,10,2,2,18,0)+demoTick*1000;accept(M.frame(M.demo(demoTick++),current,t,'demo'));timer=setTimeout(demoStep,1000);}
   function startDemo(){reset('demo');demoTick=0;for(let i=0;i<24;i++)accept(M.frame(M.demo(demoTick),current,Date.UTC(2026,10,2,2,18,demoTick++),'demo'));demoStep();}
   async function poll(token){
-    if(token!==generation||mode!=='live'||document.hidden)return;
+    if(token!==generation||mode!=='live'||!collecting||document.hidden)return;
     if(liveBusy){timer=setTimeout(()=>poll(token),250);return;}
     if(!invoke){$('source-state').textContent='实时连接请使用桌面程序';return;}
     liveBusy=true;
-    try{const raw=await invoke('snapshot',{controller:$('controller').value.trim()});if(token!==generation||document.hidden)return;accept(M.frame(raw,current,raw.observed_at));}
-    catch(e){if(token!==generation||document.hidden)return;const next={time:Date.now(),flows:[],events:[],source:'live',error:e?.message||String(e)};accept(next);$('source-state').textContent=`读取失败：${next.error}`;}
-    finally{liveBusy=false;if(token===generation&&mode==='live'&&!document.hidden)timer=setTimeout(()=>poll(token),1000);}
+    try{const raw=await invoke('snapshot',{controller:activeController});if(token!==generation||document.hidden)return;window.MonitorTools.appendRequestLog(raw.http_status,null);controllerFrame=M.frame(raw,rebaseline?null:controllerFrame,raw.observed_at);accept(M.mergeSources(controllerFrame,systemCurrent,systemError));rebaseline=false;}
+    catch(e){if(token!==generation||document.hidden)return;const next={time:Date.now(),flows:[],events:[],source:'live',error:e?.message||String(e)};window.MonitorTools.appendRequestLog(e?.http_status,next.error);controllerFrame=next;accept(M.mergeSources(controllerFrame,systemCurrent,systemError));}
+    finally{liveBusy=false;if(token===generation&&mode==='live'&&collecting&&!document.hidden)timer=setTimeout(()=>poll(token),1000);}
   }
+  function connectController(address) {
+    reset('live');
+    if(!invoke){discoveryMessage='实时连接请使用桌面程序';renderStatus();return;}
+    activeController=address;$('controller').value=address;collecting=true;renderStatus();poll(generation);
+  }
+  async function discover() {
+    reset('live');const token=generation;
+    $('controller-choice').hidden=true;$('connect-discovered').hidden=true;
+    if(!invoke){discoveryMessage='实时连接请使用桌面程序，也可切换演示数据';renderStatus();return;}
+    discovering=true;renderStatus();
+    try {
+      // 多次切换共用在途扫描，旧结果不能覆盖新的来源。 / Share scans and discard superseded results.
+      if(!scanPromise)scanPromise=invoke('discover_controllers').finally(()=>{scanPromise=null;});
+      const result=await scanPromise;if(token!==generation||mode!=='live')return;
+      discovering=false;
+      const ready=result.controllers.filter(c=>c.ready);
+      const choices=ready.length?ready:result.controllers;
+      $('controller-choice').replaceChildren();
+      for(const c of choices){const option=text('option',`${c.controller} · ${c.ready?c.version:c.configured?'需要鉴权':'待验证 · 需要鉴权'}`);option.value=c.controller;$('controller-choice').append(option);}
+      $('controller-choice').hidden=choices.length===0;$('connect-discovered').hidden=choices.length===0;
+      if(ready.length===1){$('controller-choice').value=ready[0].controller;connectController(ready[0].controller);return;}
+      discoveryMessage=ready.length>1?`发现 ${ready.length} 个控制器，请选择连接`:choices.length?'发现需要鉴权的本机服务，请选择控制器':result.warning || '未发现可用控制器，请启动代理客户端后重新扫描';
+      renderStatus();
+    } catch(error){if(token!==generation)return;discovering=false;discoveryMessage=`扫描失败：${error?.message||String(error)}`;renderStatus();}
+  }
+  $('discover').onclick=discover;
+  $('connect-discovered').onclick=()=>{const address=$('controller-choice').value;if(address)connectController(address);};
   $('demo').onclick=startDemo;
-  $('live').onclick=()=>{reset('live');$('source-state').textContent='填写控制器地址后连接';};
-  $('controller-form').onsubmit=e=>{e.preventDefault();reset('live');poll(generation);};
+  $('live').onclick=()=>{if(mode!=='live')discover();};
+  $('controller-form').onsubmit=e=>{e.preventDefault();connectController($('controller').value.trim());};
+  $('capture-toggle').onclick=()=>{
+    if(mode!=='live'||!invoke)return;
+    collecting=!collecting;generation++;clearTimeout(timer);clearTimeout(systemTimer);
+    // 暂停后的首帧只建基线，保留旧快照供检查。 / Resume without averaging across the pause.
+    if(collecting){rebaseline=true;pollSystem(generation);if(activeController)poll(generation);}
+    renderStatus();
+  };
   window.addEventListener('resize',()=>{positions.clear();renderGraph(visible());});
-  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);generation++;if(document.hidden)return;if(mode==='demo')demoStep();else if(current)poll(generation);});
-  startDemo();
+  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);clearTimeout(systemTimer);generation++;renderStatus();if(document.hidden)return;if(mode==='demo')demoStep();else if(collecting){rebaseline=true;pollSystem(generation);if(activeController)poll(generation);}});
+  discover();
 })();

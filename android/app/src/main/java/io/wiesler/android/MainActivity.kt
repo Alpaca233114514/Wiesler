@@ -26,13 +26,16 @@ import java.util.*
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
-    private val bg = Color.rgb(16, 21, 25)
-    private val surface = Color.rgb(24, 31, 36)
-    private val line = Color.rgb(43, 54, 61)
-    private val ink = Color.rgb(233, 240, 241)
-    private val muted = Color.rgb(143, 161, 171)
-    private val mint = Color.rgb(152, 228, 206)
-    private val violet = Color.rgb(174, 163, 236)
+    private val bg = StudioColors.background
+    private val surface = StudioColors.surface
+    private val line = StudioColors.border
+    private val ink = StudioColors.ink
+    private val muted = StudioColors.muted
+    private val mint = StudioColors.mint
+    private val violet = StudioColors.blue
+    private val studio = StudioSession().apply { switchSource(true) }
+    private var studioPanel: StudioPanel? = null
+    private var demoTick = 0
     private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
     private val lossWorker = Executors.newSingleThreadExecutor()
@@ -100,7 +103,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        page = savedInstanceState?.getInt("page") ?: getPreferences(0).getInt("page", 0).coerceIn(0, 3)
+        page = savedInstanceState?.getInt("page") ?: if (getPreferences(0).getBoolean("studioAvailable", false))
+            getPreferences(0).getInt("page", 4).coerceIn(0, 4) else 4
         paused = savedInstanceState?.getBoolean("paused") ?: getPreferences(0).getBoolean("paused", false)
         lossTarget = getPreferences(0).getString("lossTarget", "1.1.1.1") ?: "1.1.1.1"
         controller = getPreferences(0).getString("controller", controller) ?: controller
@@ -150,6 +154,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume(); foreground = true; rates.reset(); lastRate = null; appendSample(trend, null)
+        studio.resetBaseline()
         resetForward()
         handler.removeCallbacks(tick); handler.post(tick)
         if (controllerEnabled && !controllerBusy) fetchConnections()
@@ -159,6 +164,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         foreground = false; controllerGeneration++; handler.removeCallbacks(tick); rates.reset(); lastRate = null
+        studio.resetBaseline()
         resetForward()
         if (lossRunning) stopLoss("已进入后台，监控停止")
         persistState()
@@ -181,7 +187,8 @@ class MainActivity : Activity() {
                 sampledAt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.ROOT).format(Date())
             }
             updateOverview()
-            if (controllerEnabled && (forwardEnabled || page == 2) && !controllerBusy) fetchConnections()
+            if (page == 4 && !studio.live) sampleDemo()
+            if (controllerEnabled && (forwardEnabled || page == 2 || (page == 4 && studio.live)) && !controllerBusy) fetchConnections()
             if (SystemClock.elapsedRealtime() - lastPersistedAt >= 5000) persistState()
             handler.postDelayed(this, 1000)
         }
@@ -190,7 +197,7 @@ class MainActivity : Activity() {
     private fun persistState() {
         val history = SavedHistory(trend.toList(), forwardTrend.toList(), forwardRates.observedRx,
             forwardRates.observedTx, requestLogs.toList(), sampledAt, forwardSampledAt)
-        getPreferences(0).edit().putInt("page", page).putBoolean("paused", paused)
+        getPreferences(0).edit().putBoolean("studioAvailable", true).putInt("page", page).putBoolean("paused", paused)
             .putBoolean("forwardEnabled", forwardEnabled).putStringSet("overseasExits", overseasExits)
             .putString("history", history.encode()).apply()
         lastPersistedAt = SystemClock.elapsedRealtime()
@@ -242,11 +249,13 @@ class MainActivity : Activity() {
     }
     private fun render() {
         body.removeAllViews(); nav.removeAllViews()
+        studioPanel = null
+        body.setPadding(dp(if (page == 4) 16 else 22), dp(12), dp(if (page == 4) 16 else 22), dp(20))
         download = null; upload = null; chart = null; status = null; networkText = null; totalText = null
         forwardChart = null; forwardMetrics = null; forwardUpload = null; forwardStatus = null; forwardTotal = null
         usageRows = null; connectionRows = null; controllerStatus = null; probeLabel = null
         requestLogRows = null; lossLabel = null; lossStatusLabel = null
-        listOf("◉\n概览", "▦\n应用", "⇄\n连接", "◎\n诊断").forEachIndexed { index, title ->
+        listOf(4 to "图谱", 0 to "概览", 1 to "应用", 2 to "连接", 3 to "诊断").forEach { (index, title) ->
             nav.addView(label(title, 13, if (page == index) mint else muted, page == index).apply {
                 gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(8)); minHeight = dp(56)
                 if (page == index) background = shape(Color.rgb(34, 51, 48), 14)
@@ -254,7 +263,23 @@ class MainActivity : Activity() {
                 setOnClickListener { page = index; render(); scroll.scrollTo(0, 0); persistState() }
             }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(3); marginEnd = dp(3) })
         }
-        when (page) { 0 -> showOverview(); 1 -> showApps(); 2 -> showConnections(); 3 -> showDiagnostics() }
+        when (page) { 0 -> showOverview(); 1 -> showApps(); 2 -> showConnections(); 3 -> showDiagnostics(); 4 -> showStudio() }
+    }
+
+    private fun sampleDemo() {
+        studio.accept(studioDemo(demoTick++), SystemClock.elapsedRealtime(), System.currentTimeMillis())
+        studioPanel?.refresh(animate = true)
+    }
+
+    private fun showStudio() {
+        if (!studio.live && studio.frames.isEmpty()) sampleDemo()
+        studioPanel = StudioPanel(this, studio, ::configureController) {
+            if (studio.live) {
+                if (controllerEnabled && !controllerBusy) fetchConnections()
+            } else { demoTick = 0; sampleDemo() }
+        }
+        body.addView(studioPanel)
+        studioPanel?.updateStatus(connectionState)
     }
 
     private fun showOverview() {
@@ -476,7 +501,9 @@ class MainActivity : Activity() {
                 Toast.makeText(this, "断开设置保存失败，请重试", Toast.LENGTH_LONG).show()
                 return@setNeutralButton
             }
-            controllerGeneration++; controllerEnabled = false; secret = ""; connections = emptyList(); connectionState = "已断开"; resetForward(); render()
+            controllerGeneration++; controllerEnabled = false; secret = ""; connections = emptyList(); connectionState = "已断开"; resetForward()
+            if (studio.live) { studio.now(); studio.accept(emptyList(), SystemClock.elapsedRealtime(), System.currentTimeMillis(), connectionState) }
+            render()
             persistState()
         }.setPositiveButton("连接", null).create()
         dialog.setOnShowListener {
@@ -493,6 +520,9 @@ class MainActivity : Activity() {
                     password.error = "无法安全保存连接设置，请重试"; return@setOnClickListener
                 }
                 controller = value; secret = password.text.toString(); controllerEnabled = true; controllerGeneration++
+                if (studio.live) {
+                    studio.switchSource(false); studio.switchSource(true)
+                }
                 if (changedController) overseasExits = emptySet()
                 resetForward(clearHistory = changedController)
                 getPreferences(0).edit().putString("controller", controller).apply()
@@ -537,6 +567,7 @@ class MainActivity : Activity() {
                 if (isDestroyed || !foreground || generation != controllerGeneration) return@post
                 result.fold(onSuccess = { (time, items) ->
                     connections = items
+                    if (studio.live) studio.accept(items.map(StudioPanel::parse), time, System.currentTimeMillis())
                     forwardSampledAt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.ROOT).format(Date())
                     connectionState = "● 已连接 · HTTP $httpStatus · ${items.size} 条连接 · $forwardSampledAt"
                     appendRequestLog("Mihomo /connections", httpStatus, null)
@@ -562,11 +593,14 @@ class MainActivity : Activity() {
                     }
                     appendRequestLog("Mihomo /connections", httpStatus, connectionState)
                     connectionState = "${httpStatus?.let { code -> "HTTP $code" } ?: "未取得状态码"} · $connectionState"
+                    if (studio.live) studio.accept(emptyList(), SystemClock.elapsedRealtime(), System.currentTimeMillis(), connectionState)
                     resetForward()
                     if (forwardEnabled) forwardState = connectionState
                 })
                 renderConnections()
                 updateOverview()
+                studioPanel?.updateStatus(connectionState)
+                studioPanel?.refresh(animate = true)
             }
         }
     }

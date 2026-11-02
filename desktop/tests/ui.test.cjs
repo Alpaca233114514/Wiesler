@@ -14,6 +14,7 @@ function setup(invoke) {
   let next;
   const listeners = {};
   const context=vm.createContext({window:{__TAURI__:{core:{invoke}}},document:{getElementById:get,createElement:()=>new Element(),querySelectorAll:()=>[],addEventListener:(event,fn)=>{listeners[event]=fn;}},setTimeout:fn=>{next=fn;return 1;},clearTimeout:()=>{next=null;}});
+  vm.runInContext(fs.readFileSync('desktop/ui/monitor-tools.js','utf8'),context);
   vm.runInContext(fs.readFileSync('desktop/ui/app.js','utf8'),context);
   get('controller').value='http://127.0.0.1:9090';
   return {get,context,listeners,tick:async()=>{const fn=next;next=null;await fn?.();},run:code=>vm.runInContext(code,context)};

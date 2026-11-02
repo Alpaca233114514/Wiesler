@@ -50,13 +50,22 @@ fn decode(bytes: &[u8]) -> Result<SocketSnapshot> {
 
 #[cfg(windows)]
 pub fn collect() -> Result<SocketSnapshot> {
+    collect_script(include_str!("../scripts/observe-sockets.ps1"))
+}
+
+#[cfg(windows)]
+pub fn collect_system() -> Result<SocketSnapshot> {
+    collect_script(include_str!("../scripts/observe-system-sockets.ps1"))
+}
+
+#[cfg(windows)]
+fn collect_script(script: &str) -> Result<SocketSnapshot> {
     use std::os::windows::process::CommandExt;
     use std::{
         io::{Read, Write},
         process::{Command, Stdio},
         time::{Duration, Instant},
     };
-    let script = include_str!("../scripts/observe-sockets.ps1");
     let mut child = Command::new("powershell.exe")
         .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"])
         .creation_flags(0x08000000)
@@ -101,5 +110,10 @@ pub fn collect() -> Result<SocketSnapshot> {
 
 #[cfg(not(windows))]
 pub fn collect() -> Result<SocketSnapshot> {
+    bail!("socket_probe_windows_only")
+}
+
+#[cfg(not(windows))]
+pub fn collect_system() -> Result<SocketSnapshot> {
     bail!("socket_probe_windows_only")
 }

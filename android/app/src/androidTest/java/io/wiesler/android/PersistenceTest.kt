@@ -6,14 +6,17 @@ import android.os.Bundle
 import java.security.KeyStore
 
 class PersistenceTest : Instrumentation() {
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); start() }
+    private var studio = false
+    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); studio = arguments?.getString("suite") == "studio"; start() }
     override fun onStart() {
         val result = runCatching {
-            testHistoryRoundTripWithGapsAndBoundedRetention()
-            testEncryptedSecretRestoresAndRejectsDifferentController()
+            if (studio) StudioUiChecks(this).run() else {
+                testHistoryRoundTripWithGapsAndBoundedRetention()
+                testEncryptedSecretRestoresAndRejectsDifferentController()
+            }
         }
         finish(if (result.isSuccess) Activity.RESULT_OK else Activity.RESULT_CANCELED,
-            Bundle().apply { putString("stream", if (result.isSuccess) "Persistence checks: 2 passed" else "Persistence checks failed: ${result.exceptionOrNull()?.javaClass?.simpleName}") })
+            Bundle().apply { putString("stream", if (result.isSuccess) { if (studio) "Studio checks: 5 passed" else "Persistence checks: 2 passed" } else "Checks failed: ${result.exceptionOrNull()}") })
     }
     private fun assertTrue(value: Boolean) { check(value) }
     private fun assertFalse(value: Boolean) { check(!value) }

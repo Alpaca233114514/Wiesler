@@ -1,17 +1,17 @@
 # Wiesler 桌面前后端集成
 
-桌面当前默认进入神经元图谱 demo，支持演示 / 实时连接、节点拖动、会话检查器和快照回放。右上角「监测面板」返回原有功能。详细交互、数据口径及验证见[图谱 demo 说明](../docs/neuron-demo-20261102.md)。
+桌面默认进入实时工作台，填写控制器并连接后开始采集。「连接图谱 / 运行监测 / 历史诊断」在同一页面切换，保留采集、选中连接和诊断结果。图谱、流量概览、趋势及请求日志共享同一次后端快照；ICMP 和 SQLite 诊断直接调用已有 Rust 命令。演示数据需手动选择。详见[融合联调记录](../docs/desktop-integration-20261102.md)与[图谱交互说明](../docs/neuron-demo-20261102.md)。
 
-桌面通过 Tauri IPC 调用仓库的 `wiesler` Rust 库；不需要额外 Web 服务或 npm 依赖。打开 `ui/index.html` 仅预览界面，真实数据需要启动桌面程序。
+桌面通过 Tauri IPC 调用仓库的 `wiesler` Rust 库；不需要额外 Web 服务或 npm 依赖。打开 `ui/studio.html` 仅预览界面，真实数据需要启动桌面程序。
 
 ## 使用
 
 1. 在控制器地址栏输入 Mihomo HTTP External Controller 的回环 IP 根地址，点击「连接 / 重新连接」。默认 `http://127.0.0.1:9090` 是待填写的起点，不会自动连接，也不是 mixed-proxy 端口。
 2. 如需鉴权，在启动桌面程序前通过现有运行环境提供 `WIESLER_MIHOMO_SECRET`。密钥不经过页面、命令参数或日志。
-3. 查看连接、PID、目标、规则、原始代理链及累计流量；可搜索、筛选协议、查看详情和暂停。请求完成后间隔 1 秒再次采样，失败自动重试。
-4. 在「诊断中心」填写 CLI 已生成的 SQLite 文件路径，读取会话并选择一项生成报告。读取使用原有只读数据库接口，报告与 CLI 共用诊断实现。
+3. 在「连接图谱」查看连接、PID、目标、规则、原始代理链及累计流量；支持搜索、协议筛选、检查器和快照回放。「冻结」仅冻结图谱，「暂停采集」停止控制器采样。请求完成后间隔 1 秒再次采样，失败自动重试。切换工作台视图不重启采样，修改地址须点击重连才生效。
+4. 在「历史诊断」填写 CLI 已生成的 SQLite 文件路径，读取会话并选择一项生成报告。读取使用原有只读数据库接口，报告与 CLI 共用诊断实现。
 
-下载/上传速率来自连续有效快照计数之差，首次、失败恢复和计数回退显示「等待差分」。失败时清空当前连接与速率，累计量和采样时间保留最后成功值；暂停保留最后快照。趋势展示最近 60 次采样，缺口不连线。实时观察不写入数据库，需要持久化时仍使用 CLI `record` / `observe`。
+下载/上传速率来自连续有效快照计数之差，首次、失败恢复、暂停恢复、超过 5 秒的缺口和计数回退显示「等待差分」。失败时运行监测清空当前连接、速率和累计量；图谱若已冻结或回放则保留对应历史证据，顶部仍显示最新采集错误。暂停采集保留最后快照。窗口隐藏暂停控制器采样，重新显示后自动恢复此前开启的采样。趋势展示最近 60 次采样，缺口不连线。实时观察不写入数据库，需要持久化时仍使用 CLI `record` / `observe`。
 
 控制器请求日志保留本次打开期间最近 100 条结果，显示时间、HTTP 状态码和错误信息；200 等成功响应显示绿色，401 / 403 等失败显示红色，超时和网络错误没有状态码时明确标注。恢复采样后仍保留之前的错误。诊断报告新增 DSH / Codex 最近日志状态表，展示来源已有的成功与失败状态码、错误码及来源行号。
 
@@ -30,7 +30,7 @@ ICMP 按系统路由发出，HTTP / SOCKS 代理不能保证承载它；目标�
 ## 验证
 
 ```powershell
-node --test desktop/tests/ui.test.cjs
+node --test --test-isolation=none desktop/tests/ui.test.cjs desktop/tests/studio.test.cjs
 cargo test --manifest-path desktop/Cargo.toml --locked --offline --target-dir "$env:LOCALAPPDATA/Wiesler/build"
 cargo build --manifest-path desktop/Cargo.toml --locked --offline --target-dir "$env:LOCALAPPDATA/Wiesler/build"
 ```

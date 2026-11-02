@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 mod commands;
+mod discovery;
 mod packet_loss;
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 
@@ -80,6 +81,8 @@ fn main() {
     let result = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             commands::snapshot,
+            commands::system_snapshot,
+            discovery::discover_controllers,
             commands::sessions,
             commands::diagnose,
             packet_loss::ping
