@@ -135,7 +135,7 @@ pub async fn record(options: RecordOptions) -> Result<RecordResult> {
         };
         attempts += 1;
         let at = Stamp::now(origin);
-        let auth_failed = matches!(result, Err(ProbeError::Authentication));
+        let auth_failed = matches!(result, Err(ProbeError::Authentication(_)));
         let observation = match result {
             Ok((snapshot, version)) => {
                 consecutive = 0;

@@ -12,12 +12,14 @@ function setup(invoke) {
   }
   const get = id => {if(!elements.has(id)) elements.set(id,new Element());return elements.get(id);};
   let next;
-  const context=vm.createContext({window:{__TAURI__:{core:{invoke}}},document:{getElementById:get,createElement:()=>new Element(),querySelectorAll:()=>[]},setTimeout:fn=>{next=fn;return 1;},clearTimeout:()=>{next=null;}});
+  const listeners = {};
+  const context=vm.createContext({window:{__TAURI__:{core:{invoke}}},document:{getElementById:get,createElement:()=>new Element(),querySelectorAll:()=>[],addEventListener:(event,fn)=>{listeners[event]=fn;}},setTimeout:fn=>{next=fn;return 1;},clearTimeout:()=>{next=null;}});
+  vm.runInContext(fs.readFileSync('desktop/ui/monitor-tools.js','utf8'),context);
   vm.runInContext(fs.readFileSync('desktop/ui/app.js','utf8'),context);
   get('controller').value='http://127.0.0.1:9090';
-  return {get,context,tick:async()=>{const fn=next;next=null;await fn?.();},run:code=>vm.runInContext(code,context)};
+  return {get,context,listeners,tick:async()=>{const fn=next;next=null;await fn?.();},run:code=>vm.runInContext(code,context)};
 }
-const sample=(time,download,upload=0)=>({observed_at:time,download_total:download,upload_total:upload,connections:[]});
+const sample=(time,download,upload=0)=>({http_status:200,observed_at:time,download_total:download,upload_total:upload,connections:[]});
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 test('rate rebaselines across errors and counter resets',async()=>{
   const queue=[sample(1000,100),sample(2000,1124),new Error('network_error'),sample(4000,5000),sample(5000,1)];
@@ -60,4 +62,60 @@ test('latest traffic sample aligns with now before history fills',async()=>{
   const ui=setup(async()=>queue.shift());ui.run('start()');await flush();await ui.tick();await ui.tick();
   assert.match(ui.get('download').d,/L800,/);
   assert.match(ui.get('upload').d,/L800,/);
+});
+
+test('request log keeps success, forbidden, and timeout distinct after recovery',async()=>{
+  const queue=[sample(1000,0),{message:'authentication_failed (HTTP 403)',http_status:403},new Error('timeout'),sample(4000,1)];
+  const ui=setup(async()=>{const item=queue.shift();if(!item.connections)throw item;return item;});
+  ui.run('start()');await flush();await ui.tick();await ui.tick();await ui.tick();
+  const rows=ui.get('request-log-rows').children;
+  assert.equal(rows.length,4);
+  assert.equal(rows[0].children[2].textContent,'HTTP 200');
+  assert.equal(rows[0].children[3].textContent,'成功');
+  assert.equal(rows[1].children[2].textContent,'未取得状态码');
+  assert.equal(rows[1].children[4].textContent,'timeout');
+  assert.equal(rows[2].children[2].textContent,'HTTP 403');
+  assert.equal(rows[2].children[3].textContent,'失败');
+  assert.equal(rows[2].children[2].className,'http-error');
+});
+
+test('request log is bounded and ignores superseded responses',async()=>{
+  let resolve;const ui=setup(()=>new Promise(r=>resolve=r));
+  ui.run('start()');ui.get('pause').onclick();resolve(sample(1000,1));await flush();
+  assert.equal(ui.get('request-log-rows').children.length,0);
+  ui.run('for(let i=0;i<105;i++)appendRequestLog(200,null)');
+  assert.equal(ui.get('request-log-rows').children.length,100);
+  ui.run('appendRequestLog(null,"<img src=x>")');
+  assert.equal(ui.get('request-log-rows').children[0].children[4].textContent,'<img src=x>');
+});
+
+const beginLoss = ui => {ui.get('loss-target').value='127.0.0.1';ui.get('loss-form').onsubmit({preventDefault(){}});};
+test('packet loss excludes execution errors and uses a bounded window',async()=>{
+  const queue=[{outcome:'error',message:'unavailable'}, {outcome:'reply',rtt_ms:20,message:'ok'}, {outcome:'lost',message:'timeout'}];
+  const ui=setup(async(command,args)=>{assert.equal(command,'ping');assert.equal(args.targetIp,'127.0.0.1');return queue.shift() || {outcome:'reply',rtt_ms:0,message:'ok'};});
+  beginLoss(ui);await flush();assert.equal(ui.get('loss-rate').textContent,'—');
+  await ui.tick();await ui.tick();assert.equal(ui.get('loss-rate').textContent,'50.0%');
+  assert.equal(ui.get('loss-rtt').textContent,'平均延迟 20.0 ms');
+  assert.match(ui.get('loss-counts').textContent,/探测错误 1/);
+  for(let i=0;i<60;i++)await ui.tick();
+  assert.equal(ui.get('loss-rate').textContent,'0.0%');
+  assert.match(ui.get('loss-counts').textContent,/发送 60 · 收到 60/);
+});
+test('packet loss ignores late samples after stop and drains before restart',async()=>{
+  const pending=[];const ui=setup(()=>new Promise(resolve=>pending.push(resolve)));
+  beginLoss(ui);ui.get('loss-stop').onclick();beginLoss(ui);
+  assert.equal(pending.length,1);
+  pending.shift()({outcome:'lost',message:'timeout'});await flush();
+  assert.equal(ui.get('loss-rate').textContent,'—');
+  const nextTick=ui.tick();assert.equal(pending.length,1);
+  pending.shift()({outcome:'reply',rtt_ms:3,message:'ok'});await nextTick;
+  assert.equal(ui.get('loss-rate').textContent,'0.0%');
+  ui.run('document.hidden=true');ui.listeners.visibilitychange();
+  assert.equal(ui.get('loss-stop').disabled,true);
+  await ui.tick();assert.equal(pending.length,0);
+});
+test('packet loss rejects command-like targets without invoking the backend',()=>{
+  const ui=setup(()=>{throw new Error('must not call');});
+  ui.get('loss-target').value='1.1.1.1;id';ui.get('loss-form').onsubmit({preventDefault(){}});
+  assert.equal(ui.get('loss-status').textContent,'请输入单播 IPv4 地址');
 });

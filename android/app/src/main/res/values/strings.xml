@@ -1,0 +1,4 @@
+<resources>
+    <string name="studio_count">%1$d / %2$d</string>
+    <string name="studio_flow">%1$s   ·   %2$s\n%3$s\n↓ %4$s    ↑ %5$s\n%6$s</string>
+</resources>

@@ -1,5 +1,7 @@
 #![windows_subsystem = "windows"]
 mod commands;
+mod discovery;
+mod packet_loss;
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 
 fn data_root() -> PathBuf {
@@ -45,8 +47,9 @@ fn log(message: &str) -> String {
 fn report(message: &str) {
     let saved_path = log(message);
     let summary = message.lines().take(3).collect::<Vec<_>>().join("\n");
-    let text =
-        format!("Wiesler 启动失败 / Startup failed\n\n{summary}\n\n日志 / Log: {saved_path}");
+    let text = format!(
+        "Wiesler Desktop 启动失败 / Startup failed\n\n{summary}\n\n日志 / Log: {saved_path}"
+    );
     #[cfg(target_os = "windows")]
     {
         #[link(name = "user32")]
@@ -59,7 +62,7 @@ fn report(message: &str) {
             ) -> i32;
         }
         let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
-        let title: Vec<u16> = "Wiesler".encode_utf16().chain(Some(0)).collect();
+        let title: Vec<u16> = "Wiesler Desktop".encode_utf16().chain(Some(0)).collect();
         // 启动失败时提供可见反馈 / Show errors even without a console.
         unsafe {
             MessageBoxW(std::ptr::null_mut(), wide.as_ptr(), title.as_ptr(), 0x10);
@@ -79,8 +82,12 @@ fn main() {
     let result = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             commands::snapshot,
+            commands::system_snapshot,
+            commands::egress_address,
+            discovery::discover_controllers,
             commands::sessions,
-            commands::diagnose
+            commands::diagnose,
+            packet_loss::ping
         ])
         .setup(|app| {
             let data_dir = data_root().join("WebView2");
@@ -99,10 +106,18 @@ fn main() {
             tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
-                tauri::WebviewUrl::App("index.html".into()),
+                tauri::WebviewUrl::App("studio.html".into()),
             )
-            .title("Wiesler · Network Observatory")
-            .inner_size(1360.0, 900.0)
+            .title("Wiesler Desktop")
+            .background_color(tauri::utils::config::Color(12, 17, 27, 255))
+            .visible(false)
+            .on_page_load(|window, payload| {
+                if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                    let _ = window.show();
+                }
+            })
+            .decorations(false)
+            .inner_size(1040.0, 808.0)
             .min_inner_size(900.0, 640.0)
             .data_directory(data_dir)
             .build()

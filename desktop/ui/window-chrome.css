@@ -1,0 +1,17 @@
+.native-window .window-drag-header{-webkit-user-select:none;user-select:none;position:sticky;top:0;z-index:20}
+.native-window .topbar{height:60px;padding-right:0;gap:24px}
+.native-window .topbar .mark{width:32px;height:32px;font-size:21px}
+.native-window .topbar .brand{font-size:22px}
+.native-window .source-switch{padding:2px}
+.native-window .source-switch button{min-height:38px;padding:7px 14px}
+.native-window .window-controls{display:flex;align-self:stretch;flex-shrink:0;gap:0;margin-left:0}
+.native-window .window-controls button{display:grid;place-items:center;min-width:48px;width:48px;min-height:44px;height:100%;padding:0;margin:0;border:0;border-radius:0;background:transparent;color:#d8e3f0;cursor:default}
+.native-window .window-controls button:hover{background:#ffffff16}
+.native-window .window-controls button:active{background:#ffffff26}
+.native-window .window-controls #window-close:hover{background:#c42b1c;color:white}
+.native-window .window-controls #window-close:active{background:#a82418}
+.native-window .window-controls svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1;pointer-events:none}
+.native-window .window-controls button:focus-visible{outline:2px solid #7ce6cd;outline-offset:-4px}
+.native-window .window-action-status{position:absolute;right:160px;top:100%;padding:10px 16px;background:#472b2b;color:#fff;border:1px solid #b96868;border-radius:6px;font-size:16px}
+.native-window header:not(.topbar){background:#101318;gap:16px}
+.native-window header:not(.topbar)>div:not(.window-controls){margin-left:auto}

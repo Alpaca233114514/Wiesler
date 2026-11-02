@@ -11,25 +11,83 @@ use wiesler::{
 
 #[derive(Serialize)]
 pub struct LiveSnapshot {
+    http_status: u16,
     observed_at: u64,
     connections: Vec<Connection>,
     upload_total: u64,
     download_total: u64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SnapshotError {
+    message: String,
+    http_status: Option<u16>,
+}
+
+impl From<String> for SnapshotError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            http_status: None,
+        }
+    }
+}
+
 #[tauri::command]
-pub async fn snapshot(controller: String) -> Result<LiveSnapshot, String> {
-    let secret = std::env::var("WIESLER_MIHOMO_SECRET").ok();
+pub async fn snapshot(controller: String) -> Result<LiveSnapshot, SnapshotError> {
+    let secret = wiesler::config::controller_secret(&controller);
     let config = ControllerConfig::new(&controller, secret.as_deref(), Duration::from_secs(3))
         .map_err(|e| e.to_string())?;
     let probe = Mihomo::new(config).map_err(|_| "无法初始化控制器客户端".to_string())?;
-    let data = probe.snapshot().await.map_err(|e| e.to_string())?;
+    let (http_status, data) = probe
+        .snapshot_with_status()
+        .await
+        .map_err(|e| SnapshotError {
+            message: e.error.to_string(),
+            http_status: e.http_status,
+        })?;
     Ok(LiveSnapshot {
+        http_status,
         observed_at: Stamp::now(Instant::now()).utc_ms,
         connections: data.connections,
         upload_total: data.upload_total,
         download_total: data.download_total,
     })
+}
+
+#[tauri::command]
+pub async fn system_snapshot() -> Result<wiesler::sockets::SocketSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        wiesler::sockets::collect_system().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "读取系统连接失败".to_string())?
+}
+
+#[tauri::command]
+pub async fn egress_address(
+    controller: Option<String>,
+    via_proxy: bool,
+) -> Result<wiesler::probes::egress::EgressAddress, String> {
+    let proxy = if via_proxy {
+        let controller = controller.ok_or("请先连接代理控制器")?;
+        let secret = wiesler::config::controller_secret(&controller);
+        let config = ControllerConfig::new(&controller, secret.as_deref(), Duration::from_secs(3))
+            .map_err(|e| e.to_string())?;
+        let probe = Mihomo::new(config).map_err(|_| "无法读取代理端口")?;
+        Some(
+            probe
+                .http_proxy_address()
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or("控制器未启用 HTTP/Mixed 代理端口")?,
+        )
+    } else {
+        None
+    };
+    tauri::async_runtime::spawn_blocking(move || wiesler::probes::egress::measure(proxy.as_deref()))
+        .await
+        .map_err(|_| "出口探测任务失败".to_string())?
 }
 
 #[tauri::command]
@@ -64,6 +122,40 @@ mod tests {
     };
 
     #[test]
+    #[ignore = "requires internet and the local proxy controller"]
+    fn real_egress_acceptance() {
+        tauri::async_runtime::block_on(async {
+            let controller = wiesler::config::local_controller().unwrap().address;
+            let system = tauri::async_runtime::spawn(egress_address(None, false));
+            let proxy = egress_address(Some(controller), true).await;
+            let system = system.await.unwrap();
+            assert!(
+                system.is_ok(),
+                "system egress: {}",
+                system.err().unwrap_or_default()
+            );
+            assert!(
+                proxy.is_ok(),
+                "proxy egress: {}",
+                proxy.err().unwrap_or_default()
+            );
+            let system = system.unwrap();
+            let proxy = proxy.unwrap();
+            assert!(
+                system.location.is_some(),
+                "system geography: {:?}",
+                system.location_error
+            );
+            assert!(
+                proxy.location.is_some(),
+                "proxy geography: {:?}",
+                proxy.location_error
+            );
+            println!("system_egress=ok proxy_egress=ok system_geography=ok proxy_geography=ok");
+        });
+    }
+
+    #[test]
     fn desktop_snapshot_uses_real_probe() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
@@ -89,8 +181,40 @@ mod tests {
         });
         let data = tauri::async_runtime::block_on(snapshot(address)).unwrap();
         assert_eq!(data.connections.len(), 1);
+        assert_eq!(data.http_status, 200);
         assert!(data.observed_at > 0);
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn desktop_snapshot_preserves_http_error_codes_without_response_body() {
+        for code in [200, 401, 403, 503] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = format!("http://{}", listener.local_addr().unwrap());
+            let worker = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0];
+                while !request.ends_with(b"\r\n\r\n") {
+                    assert_eq!(stream.read(&mut byte).unwrap(), 1);
+                    request.push(byte[0]);
+                }
+                write!(
+                    stream,
+                    "HTTP/1.1 {code} Test\r\nContent-Length: 7\r\nConnection: close\r\n\r\nPRIVATE"
+                )
+                .unwrap();
+            });
+            let error = tauri::async_runtime::block_on(snapshot(address))
+                .err()
+                .unwrap();
+            assert_eq!(error.http_status, Some(code));
+            assert!(!error.message.contains("PRIVATE"));
+            worker.join().unwrap();
+        }
     }
 
     #[test]

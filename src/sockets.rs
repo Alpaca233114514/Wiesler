@@ -15,8 +15,20 @@ pub struct SocketObservation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SocketOwner {
+    pub process: String,
+    pub pid: u32,
+    pub local_ip: String,
+    pub local_port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocketSnapshot {
     pub process_count: usize,
+    #[serde(default)]
+    pub processes: std::collections::BTreeMap<u32, String>,
+    #[serde(default)]
+    pub udp_owners: Vec<SocketOwner>,
     pub observed_at_utc: u64,
     pub sockets: Vec<SocketObservation>,
 }
@@ -45,18 +57,34 @@ fn decode(bytes: &[u8]) -> Result<SocketSnapshot> {
             bail!("invalid_socket_address");
         }
     }
+    if result
+        .udp_owners
+        .iter()
+        .any(|owner| owner.local_ip.parse::<std::net::IpAddr>().is_err())
+    {
+        bail!("invalid_socket_address");
+    }
     Ok(result)
 }
 
 #[cfg(windows)]
 pub fn collect() -> Result<SocketSnapshot> {
+    collect_script(include_str!("../scripts/observe-sockets.ps1"))
+}
+
+#[cfg(windows)]
+pub fn collect_system() -> Result<SocketSnapshot> {
+    collect_script(include_str!("../scripts/observe-system-sockets.ps1"))
+}
+
+#[cfg(windows)]
+fn collect_script(script: &str) -> Result<SocketSnapshot> {
     use std::os::windows::process::CommandExt;
     use std::{
         io::{Read, Write},
         process::{Command, Stdio},
         time::{Duration, Instant},
     };
-    let script = include_str!("../scripts/observe-sockets.ps1");
     let mut child = Command::new("powershell.exe")
         .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"])
         .creation_flags(0x08000000)
@@ -101,5 +129,10 @@ pub fn collect() -> Result<SocketSnapshot> {
 
 #[cfg(not(windows))]
 pub fn collect() -> Result<SocketSnapshot> {
+    bail!("socket_probe_windows_only")
+}
+
+#[cfg(not(windows))]
+pub fn collect_system() -> Result<SocketSnapshot> {
     bail!("socket_probe_windows_only")
 }

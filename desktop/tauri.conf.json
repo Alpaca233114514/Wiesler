@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Wiesler",
+  "productName": "Wiesler Desktop",
   "version": "0.1.0",
   "identifier": "com.wiesler.desktop",
   "build": {
