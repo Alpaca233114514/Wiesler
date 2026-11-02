@@ -1,6 +1,6 @@
 # Wiesler Desktop
 
-桌面默认进入实时工作台，自动采集系统 TCP 连接，并扫描、验证本机 Mihomo 控制器。唯一可用控制器自动连接；多个结果在「设置」选择。图谱、运行监测、历史诊断和设置在同一页面切换，保留采集和检查状态。Mihomo 图谱、流量概览、趋势及请求日志共享同一次控制器快照；ICMP 和 SQLite 诊断调用已有 Rust 命令。演示数据需手动选择。详见[融合联调记录](../docs/desktop-integration-20261102.md)与[图谱交互说明](../docs/neuron-demo-20261102.md)。
+桌面默认进入实时工作台，自动采集系统 TCP 连接，并扫描、验证本机 Mihomo 控制器。唯一可用控制器自动连接；多个结果在「设置」选择。图谱、运行监测、历史诊断和设置在同一页面切换，保留采集和检查状态。Mihomo 图谱、流量概览、趋势及请求日志共享同一次控制器快照；ICMP 和 SQLite 诊断调用已有 Rust 命令。仅显示实际采集数据，不提供演示模式。详见[融合联调记录](../docs/desktop-integration-20261102.md)与[图谱交互说明](../docs/neuron-demo-20261102.md)。
 
 桌面通过 Tauri IPC 调用仓库的 `wiesler` Rust 库；不需要额外 Web 服务或 npm 依赖。打开 `ui/studio.html` 仅预览界面，真实数据需要启动桌面程序。
 
@@ -47,7 +47,7 @@ cargo build --manifest-path desktop/Cargo.toml --locked --offline --target-dir "
 
 新增依赖仅为本仓库 path 库和已使用的 serde；继承后端的锁定依赖与 SQLite bundled 构建行为。桌面 lockfile 增补后端依赖闭包，没有升级根项目 lockfile。接口用法核对了 [Tauri 官方 GitHub](https://github.com/tauri-apps/tauri) 与 [官方命令文档](https://v2.tauri.app/develop/calling-rust/)，未复制第三方实现代码。
 
-界面为原创实现，框架采用官方 Tauri（https://github.com/tauri-apps/tauri，MIT / Apache-2.0）；未复制第三方界面代码。Tauri 的构建脚本生成平台资源并编译 Windows WebView2 桌面运行时适配。
+界面布局为 Wiesler 实现，主题令牌适配自 Papyrus Desktop（MIT），来源与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。框架采用官方 Tauri（https://github.com/tauri-apps/tauri，MIT / Apache-2.0）。Tauri 的构建脚本生成平台资源并编译 Windows WebView2 桌面运行时适配。
 
 启动日志优先追加到 EXE 同目录的 wiesler-startup.log，写入失败依次尝试 LOCALAPPDATA/Wiesler/desktop.log 和临时目录。记录 PID、时间、目录创建、WebView2 创建错误及 panic 堆栈。弹窗显示实际日志路径；所有候选路径均失败时显示写入失败原因。
 

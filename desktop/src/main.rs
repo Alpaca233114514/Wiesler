@@ -84,6 +84,7 @@ fn main() {
             commands::snapshot,
             commands::system_snapshot,
             commands::egress_address,
+            commands::inspect_dns,
             discovery::discover_controllers,
             commands::sessions,
             commands::diagnose,

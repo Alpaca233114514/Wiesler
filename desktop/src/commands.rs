@@ -65,6 +65,13 @@ pub async fn system_snapshot() -> Result<wiesler::sockets::SocketSnapshot, Strin
 }
 
 #[tauri::command]
+pub async fn inspect_dns() -> Result<wiesler::probes::privacy::DnsInspection, String> {
+    tauri::async_runtime::spawn_blocking(wiesler::probes::privacy::inspect)
+        .await
+        .map_err(|_| "DNS 检查任务失败".to_string())?
+}
+
+#[tauri::command]
 pub async fn egress_address(
     controller: Option<String>,
     via_proxy: bool,
@@ -129,6 +136,15 @@ mod tests {
             let system = tauri::async_runtime::spawn(egress_address(None, false));
             let proxy = egress_address(Some(controller), true).await;
             let system = system.await.unwrap();
+            for (name, result) in [("system", &system), ("proxy", &proxy)] {
+                match result {
+                    Ok(value) => println!(
+                        "{name}: ip={} location={:?} location_error={:?}",
+                        value.ip, value.location, value.location_error
+                    ),
+                    Err(error) => println!("{name}: {error}"),
+                }
+            }
             assert!(
                 system.is_ok(),
                 "system egress: {}",
