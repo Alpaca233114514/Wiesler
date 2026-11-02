@@ -6,7 +6,7 @@ cargo fmt --all -- --check
 cargo fmt --manifest-path desktop/Cargo.toml --all -- --check
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
-node --test desktop/tests/ui.test.cjs
+node --test desktop/tests/ui.test.cjs desktop/tests/studio.test.cjs
 cargo test --manifest-path desktop/Cargo.toml --locked
 cargo build --release --locked
 cargo build --manifest-path desktop/Cargo.toml --release --locked

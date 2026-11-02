@@ -192,9 +192,27 @@ mod tests {
                     .await
                     .is_ok()
             );
+            let system = crate::commands::system_snapshot().await.unwrap();
+            assert!(system.process_count > 0);
+            assert!(!system.processes.is_empty());
+            let ping = crate::packet_loss::ping("127.0.0.1".into()).await.unwrap();
+            assert_eq!(ping.outcome, "reply");
+            if let Ok(database) = std::env::var("WIESLER_TEST_DATABASE") {
+                let sessions = crate::commands::sessions(database.clone()).await.unwrap();
+                assert!(!sessions.is_empty());
+                let report = crate::commands::diagnose(database, sessions[0].session_id.clone())
+                    .await
+                    .unwrap();
+                assert!(!report.is_empty());
+                println!("sqlite_sessions={} diagnose=ok", sessions.len());
+            }
             println!(
-                "scanned={} controller={} ready=true snapshot=ok",
-                report.scanned, controller.controller
+                "scanned={} controller={} ready=true snapshot=ok system_sockets={} windows_processes={} udp_owners={} loopback_ping=ok",
+                report.scanned,
+                controller.controller,
+                system.sockets.len(),
+                system.processes.len(),
+                system.udp_owners.len()
             );
         });
     }

@@ -2,6 +2,7 @@
   'use strict';
   const number = n => Number.isFinite(Number(n)) && Number(n) >= 0 ? Number(n) : 0;
   const endpoint = (host, port) => `${String(host).includes(':') ? `[${host}]` : host}:${port || '?'}`;
+  const processName = name => typeof name==='string'&&!['','unknown','未知进程'].includes(name.trim().toLowerCase())?name.trim():null;
   const bytes = n => {
     if (n == null || !Number.isFinite(n)) return '—';
     const i = Math.min(3, Math.floor(Math.log(Math.max(1, n)) / Math.log(1024)));
@@ -10,7 +11,9 @@
   function normalize(raw) {
     const m = raw.metadata || {}, value = (a,b) => m[a] ?? m[b];
     const host = m.host || value('destination_ip','destinationIP') || '未知目标';
-    return {id:String(raw.id), start:raw.start || '', app:m.process || '未知进程', pid:m.pid ?? '未知',
+    const process=processName(m.process),pid=Number(m.pid)>0?Number(m.pid):'未知';
+    return {id:String(raw.id), start:raw.start || '', app:process || (pid==='未知'?'进程待识别':`PID ${pid}`), pid,
+      processSource:process?'controller':null,
       host, destination:endpoint(value('destination_ip','destinationIP') || host,value('destination_port','destinationPort')),
       source:endpoint(value('source_ip','sourceIP') || '未知',value('source_port','sourcePort')),
       port:value('destination_port','destinationPort') || '?', protocol:(m.network || '未知').toUpperCase(),
@@ -20,20 +23,65 @@
   }
   function systemFlow(socket) {
     return {id:`system:${socket.pid}:${socket.process_started_at || ''}:${socket.local_ip}:${socket.local_port}:${socket.remote_ip}:${socket.remote_port}`,
-      start:'', app:socket.process || '未知进程', pid:socket.pid, host:socket.remote_ip,
+      start:'', app:processName(socket.process) || `PID ${socket.pid}`, processSource:processName(socket.process)?'windows-socket':null, pid:socket.pid, host:socket.remote_ip,
       destination:endpoint(socket.remote_ip,socket.remote_port),source:endpoint(socket.local_ip,socket.local_port),
       port:socket.remote_port,protocol:'TCP',route:'系统连接 · 路由待确认',rule:'—',origin:'system',routing:'unknown',
       download:null,upload:null,rx:null,tx:null,raw:socket};
   }
+  const hostKey = flow => flow.host.toLowerCase().replace(/\.$/,'');
+  const flowKey = flow => JSON.stringify([flow.id,flow.start]);
+  function rateHistory(frames) {
+    const history=new Map();
+    frames.forEach((frame,index)=>{
+      for(const flow of frame.flows || []){
+        if(flow.rx==null&&flow.tx==null)continue;
+        const key=flowKey(flow);
+        if(!history.has(key))history.set(key,Array(frames.length).fill(null));
+        history.get(key)[index]=[flow.rx,flow.tx];
+      }
+    });
+    return history;
+  }
+  function groupByHost(flows) {
+    const groups=new Map();
+    for(const flow of flows){
+      const key=hostKey(flow);
+      if(!groups.has(key))groups.set(key,{key,label:flow.host,flows:[]});
+      groups.get(key).flows.push(flow);
+    }
+    return [...groups.values()];
+  }
+  function routePath(flow) {
+    const nodes=[{kind:'computer',label:'电脑',detail:`${flow.app} · ${flow.source}`}];
+    if(flow.routing==='proxy'){
+      // 控制器从出口向外追加策略组，展示时反向展开。 / Reverse the controller's leaf-first logical chain.
+      for(const name of [...(flow.raw.chains || [])].reverse())nodes.push({kind:'route',label:name,detail:`逻辑路由节点 · ${name}`});
+    }else if(flow.routing!=='direct')nodes.push({kind:'unknown',label:'路由待确认',detail:'系统连接表没有代理路径证据'});
+    nodes.push({kind:'server',label:'服务器',detail:`${flow.host} · ${flow.destination}`});
+    return nodes;
+  }
   function mergeSources(controller, system, systemError = null) {
     const flows=(controller?.flows || []).map(f=>({...f}));
+    for(const flow of flows){
+      const name=processName(system?.processes?.[flow.pid]);
+      if(!flow.processSource&&name){flow.app=name;flow.processSource='windows-pid';}
+      if(flow.protocol==='UDP'&&!flow.processSource){
+        const metadata=flow.raw.metadata || {},port=metadata.source_port ?? metadata.sourcePort,ip=metadata.source_ip ?? metadata.sourceIP;
+        const owners=(system?.udp_owners || []).filter(owner=>Number(owner.local_port)===Number(port)&&
+          (owner.local_ip===ip||owner.local_ip==='0.0.0.0'||owner.local_ip==='::')&&(flow.pid==='未知'||flow.pid===owner.pid));
+        if(owners.length&&new Set(owners.map(o=>o.pid)).size===1){
+          const owner=owners[0],name=processName(system?.processes?.[owner.pid] || owner.process);
+          flow.pid=owner.pid;flow.processOwner=owner;flow.app=name || `PID ${owner.pid}`;flow.processSource=name?'windows-udp':null;
+        }
+      }
+    }
     for(const socket of system?.sockets || []){
-      const f=systemFlow(socket);
+      const f=systemFlow({...socket,process:system?.processes?.[socket.pid] || socket.process});
       const matches=flows.filter(c=>c.origin==='mihomo'&&c.protocol==='TCP'&&c.source===f.source&&
         (c.destination===f.destination||socket.remote_ip==='::1'||socket.remote_ip.startsWith('127.'))&&
         (c.pid==='未知'||c.pid===socket.pid));
       // 只合并可唯一对应的端点；没有控制器证据不推断直连。 / Merge unique tuples without inferring a direct route.
-      if(matches.length===1){matches[0].system=socket;if(matches[0].pid==='未知')matches[0].pid=socket.pid;if(matches[0].app==='未知进程')matches[0].app=f.app;}
+      if(matches.length===1){matches[0].system=socket;if(matches[0].pid==='未知')matches[0].pid=socket.pid;if(!matches[0].processSource){matches[0].app=f.app;matches[0].processSource=f.processSource;}}
       else flows.push(f);
     }
     return {...(controller || {time:system?.observed_at_utc || Date.now(),source:'live',events:[],rx:null,tx:null,download:null,upload:null,error:null}),flows,systemError};
@@ -71,7 +119,7 @@
       download:800000+i*250000+tick*s[7],upload:40000+tick*s[8]})),
       events:[{id:'browser-api',time:base+18000,level:'warning',text:'演示事件：TLS 握手超时',evidence:'场景脚本 · 请求 #18 · 超时阈值 3 秒'}].filter(e=>tick>=18)};
   }
-  const api = {endpoint, bytes, normalize, frame, demo, systemFlow, mergeSources};
+  const api = {endpoint, bytes, normalize, frame, demo, systemFlow, mergeSources, hostKey, groupByHost, routePath, flowKey, rateHistory};
   if (typeof module !== 'undefined') module.exports = api;
   root.StudioModel = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

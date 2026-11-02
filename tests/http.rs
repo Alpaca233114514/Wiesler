@@ -49,6 +49,32 @@ fn response(status: u16, body: &str) -> String {
 }
 
 #[tokio::test]
+async fn discovers_proxy_port_from_controller_config_without_using_controller_port() {
+    for (body, expected) in [
+        (
+            r#"{"mixed-port":7897,"port":8080}"#,
+            Some("http://127.0.0.1:7897/"),
+        ),
+        (
+            r#"{"mixed-port":0,"port":8080}"#,
+            Some("http://127.0.0.1:8080/"),
+        ),
+        (r#"{"mixed-port":0,"port":0}"#, None),
+    ] {
+        let (endpoint, requests, worker) = server(vec![(0, response(200, body))]);
+        let probe =
+            Mihomo::new(ControllerConfig::new(&endpoint, None, Duration::from_secs(2)).unwrap())
+                .unwrap();
+        assert_eq!(
+            probe.http_proxy_address().await.unwrap().as_deref(),
+            expected
+        );
+        worker.join().unwrap();
+        assert!(requests.lock().unwrap()[0].starts_with("GET /configs HTTP/1.1"));
+    }
+}
+
+#[tokio::test]
 async fn http_gets_use_bearer_header_and_parse_actual_wire_shape() {
     let (endpoint, requests, worker) = server(vec![
         (0, response(200, r#"{"version":"synthetic-v1"}"#)),

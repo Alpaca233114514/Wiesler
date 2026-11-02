@@ -65,6 +65,32 @@ pub async fn system_snapshot() -> Result<wiesler::sockets::SocketSnapshot, Strin
 }
 
 #[tauri::command]
+pub async fn egress_address(
+    controller: Option<String>,
+    via_proxy: bool,
+) -> Result<wiesler::probes::egress::EgressAddress, String> {
+    let proxy = if via_proxy {
+        let controller = controller.ok_or("请先连接代理控制器")?;
+        let secret = wiesler::config::controller_secret(&controller);
+        let config = ControllerConfig::new(&controller, secret.as_deref(), Duration::from_secs(3))
+            .map_err(|e| e.to_string())?;
+        let probe = Mihomo::new(config).map_err(|_| "无法读取代理端口")?;
+        Some(
+            probe
+                .http_proxy_address()
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or("控制器未启用 HTTP/Mixed 代理端口")?,
+        )
+    } else {
+        None
+    };
+    tauri::async_runtime::spawn_blocking(move || wiesler::probes::egress::measure(proxy.as_deref()))
+        .await
+        .map_err(|_| "出口探测任务失败".to_string())?
+}
+
+#[tauri::command]
 pub async fn sessions(database: String) -> Result<Vec<wiesler::store::Session>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         wiesler::store::sessions(Path::new(&database)).map_err(|e| e.to_string())
@@ -94,6 +120,40 @@ mod tests {
         io::{Read, Write},
         net::TcpListener,
     };
+
+    #[test]
+    #[ignore = "requires internet and the local proxy controller"]
+    fn real_egress_acceptance() {
+        tauri::async_runtime::block_on(async {
+            let controller = wiesler::config::local_controller().unwrap().address;
+            let system = tauri::async_runtime::spawn(egress_address(None, false));
+            let proxy = egress_address(Some(controller), true).await;
+            let system = system.await.unwrap();
+            assert!(
+                system.is_ok(),
+                "system egress: {}",
+                system.err().unwrap_or_default()
+            );
+            assert!(
+                proxy.is_ok(),
+                "proxy egress: {}",
+                proxy.err().unwrap_or_default()
+            );
+            let system = system.unwrap();
+            let proxy = proxy.unwrap();
+            assert!(
+                system.location.is_some(),
+                "system geography: {:?}",
+                system.location_error
+            );
+            assert!(
+                proxy.location.is_some(),
+                "proxy geography: {:?}",
+                proxy.location_error
+            );
+            println!("system_egress=ok proxy_egress=ok system_geography=ok proxy_geography=ok");
+        });
+    }
 
     #[test]
     fn desktop_snapshot_uses_real_probe() {

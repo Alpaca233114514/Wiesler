@@ -20,4 +20,10 @@ $rows = @(Get-NetTCPConnection | Where-Object { $_.State -eq 'Established' } | F
         role = 'system_connection'
     }
 })
-ConvertTo-Json -InputObject @{ process_count = $observedProcesses.Count; observed_at_utc = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); sockets = $rows } -Depth 4 -Compress
+$processNames = @{}
+foreach ($processId in $observedProcesses.Keys) { $processNames[[string]$processId] = $observedProcesses[$processId].name }
+$udpOwners = @(Get-NetUDPEndpoint | ForEach-Object {
+    $entry = $observedProcesses[[int]$_.OwningProcess]
+    [ordered]@{ process = $(if ($entry) { $entry.name } else { 'unknown' }); pid = [int]$_.OwningProcess; local_ip = $_.LocalAddress; local_port = [int]$_.LocalPort }
+})
+ConvertTo-Json -InputObject @{ process_count = $observedProcesses.Count; processes = $processNames; udp_owners = $udpOwners; observed_at_utc = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); sockets = $rows } -Depth 4 -Compress

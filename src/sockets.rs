@@ -15,8 +15,20 @@ pub struct SocketObservation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SocketOwner {
+    pub process: String,
+    pub pid: u32,
+    pub local_ip: String,
+    pub local_port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocketSnapshot {
     pub process_count: usize,
+    #[serde(default)]
+    pub processes: std::collections::BTreeMap<u32, String>,
+    #[serde(default)]
+    pub udp_owners: Vec<SocketOwner>,
     pub observed_at_utc: u64,
     pub sockets: Vec<SocketObservation>,
 }
@@ -44,6 +56,13 @@ fn decode(bytes: &[u8]) -> Result<SocketSnapshot> {
         {
             bail!("invalid_socket_address");
         }
+    }
+    if result
+        .udp_owners
+        .iter()
+        .any(|owner| owner.local_ip.parse::<std::net::IpAddr>().is_err())
+    {
+        bail!("invalid_socket_address");
     }
     Ok(result)
 }

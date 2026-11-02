@@ -161,6 +161,31 @@ impl Mihomo {
             .map_err(|failure| failure.error)
     }
 
+    pub async fn http_proxy_address(&self) -> Result<Option<String>, ProbeError> {
+        #[derive(Deserialize)]
+        struct Ports {
+            #[serde(default, rename = "mixed-port")]
+            mixed: u16,
+            #[serde(default)]
+            port: u16,
+        }
+        let ports: Ports = serde_json::from_slice(&self.get("configs").await?)
+            .map_err(|_| ProbeError::InvalidSnapshot)?;
+        let port = if ports.mixed > 0 {
+            ports.mixed
+        } else {
+            ports.port
+        };
+        if port == 0 {
+            return Ok(None);
+        }
+        let mut address = self.config.url.clone();
+        address
+            .set_port(Some(port))
+            .map_err(|_| ProbeError::InvalidSnapshot)?;
+        Ok(Some(address.to_string()))
+    }
+
     pub async fn snapshot_with_status(&self) -> Result<(u16, Snapshot), ProbeFailure> {
         let (status, body) = self
             .send_with_status(
