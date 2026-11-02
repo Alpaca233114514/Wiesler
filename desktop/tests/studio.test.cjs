@@ -28,7 +28,7 @@ function setup(invoke, demo = true, discovery = async()=>({controllers:[],scanne
   }
   const elements=new Map(),get=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
   const timers=new Map();let timerId=0;
-  const window={StudioModel:M,innerWidth:1360,addEventListener(){},matchMedia:()=>({matches:false}),__TAURI__:invoke?{core:{invoke:(command,args)=>command==='discover_controllers'?discovery():command==='system_snapshot'?system():command==='egress_address'?egress(args):invoke(command,args)}}:null};
+  const window={StudioModel:M,PrivacyModel:require('../ui/privacy-model.js'),innerWidth:1360,addEventListener(){},matchMedia:()=>({matches:false}),__TAURI__:invoke?{core:{invoke:(command,args)=>command==='discover_controllers'?discovery():command==='system_snapshot'?system():command==='egress_address'?egress(args):invoke(command,args)}}:null};
   const listeners={};
   const context=vm.createContext({window,document:{hidden:false,getElementById:get,createElement:()=>new Element(),createElementNS:()=>new Element(),querySelectorAll:()=>[],addEventListener:(event,fn)=>{(listeners[event] ||= []).push(fn);}},setTimeout:(fn,delay)=>{timers.set(++timerId,{fn,delay});return timerId;},clearTimeout:id=>timers.delete(id)});
   vm.runInContext(fs.readFileSync('desktop/ui/monitor-tools.js','utf8'),context);
@@ -298,4 +298,30 @@ test('sampling keeps moving dots alive until they enter their destination nodes'
   const ui=setup(),dot=ui.get('pulses').children[0],motion=dot.children[0];
   await ui.tick();assert.equal(ui.get('pulses').children[0],dot);
   assert.equal(motion.attrs.begin,'indefinite');assert.match(motion.attrs.path,/ L .* L /);
+});
+
+
+test('privacy view applies explicit policy, exports demo provenance and preserves evidence as text',()=>{
+  const ui=setup();ui.get('view-privacy').onclick();
+  assert.equal(ui.get('privacy-view').hidden,false);
+  assert.match(ui.content(ui.get('privacy-findings')),/DNS 端口连接/);
+  ui.get('privacy-proxy').checked=true;ui.get('privacy-threshold').value='100';
+  ui.get('privacy-policy').onsubmit({preventDefault(){}});
+  assert.match(ui.content(ui.get('privacy-findings')),/DIRECT 与预期代理不符/);
+  ui.get('privacy-report').onclick();
+  const report=JSON.parse(ui.get('privacy-report-result').value);
+  assert.equal(report.source,'demo');assert.equal(report.collection,'demo');
+  assert.equal(report.policy.expectProxy,true);
+  assert.ok(report.findings.some(f=>f.evidence.connectionId==='dns'));
+  ui.get('privacy-environment').onclick();
+  assert.match(ui.get('privacy-environment-result').textContent,/不代表其他浏览器/);
+});
+
+
+test('privacy evidence remains expanded across live refreshes',async()=>{
+  const ui=setup();
+  const detail=ui.get('privacy-findings').children[0].children[2];
+  detail.open=true;detail.ontoggle();
+  await ui.tick();
+  assert.equal(ui.get('privacy-findings').children[0].children[2].open,true);
 });

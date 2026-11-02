@@ -71,3 +71,9 @@ cargo test --manifest-path desktop/Cargo.toml --locked --offline --target-dir "$
 ```
 
 实现前检查了 [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev) 等现成项目，本轮复用本仓库的 Tauri/Mihomo/诊断实现，没有复制第三方实现、增加依赖或升级 lockfile。
+
+## 试用包启动复查（2026-11-02 晚）
+
+仓库 `dist` 中的 EXE 继承了工作区的低完整性标签。资源管理器双击后，进程同样以低完整性运行，创建普通用户 WebView2 数据目录时报 `PermissionDenied (os error 5)`。此前仅确认 Release 编译、签名和 CLI 启动，没有验证该桌面交付路径，不能算桌面启动验收。
+
+将原签名 ZIP 经正式权限审核解压到独立的普通用户试用目录后，未修改 ACL、完整性标签或系统防护，也未清空已有数据。同一程序成功创建 WebView2 主窗口，实际界面显示实时 Mihomo、系统 TCP、连接图谱和出口信息。交付时应从 ZIP 解压后的正常用户目录启动并核验实际窗口，不应将受限工作区内的 EXE 链接当作已验收的安装入口。

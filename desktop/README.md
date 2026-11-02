@@ -38,7 +38,7 @@ ICMP 按系统路由发出，HTTP / SOCKS 代理不能保证承载它；目标�
 ## 验证
 
 ```powershell
-node --test --test-isolation=none desktop/tests/ui.test.cjs desktop/tests/studio.test.cjs
+node --test --test-isolation=none desktop/tests/ui.test.cjs desktop/tests/studio.test.cjs desktop/tests/privacy.test.cjs
 cargo test --manifest-path desktop/Cargo.toml --locked --offline --target-dir "$env:LOCALAPPDATA/Wiesler/build"
 cargo build --manifest-path desktop/Cargo.toml --locked --offline --target-dir "$env:LOCALAPPDATA/Wiesler/build"
 ```
@@ -60,3 +60,7 @@ cargo build --manifest-path desktop/Cargo.toml --locked --offline --target-dir "
 ```
 
 本机交付入口：`%LOCALAPPDATA%/Wiesler/build/debug/wiesler-desktop.exe`。重建后须重新自签名。旧 target、target-verified、target-logged 目录保留作诊断证据，不再作为推荐启动入口。
+
+## 隐私检查
+
+工作台新增 DNS 端口线索、显式代理预期对比、上传阈值检查和当前 WebView 环境自检，支持逐条证据与 JSON 报告。实现范围、误报边界和 Windows 发行者签名见[隐私检查说明](../docs/privacy-inspector.md)。

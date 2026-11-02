@@ -8,7 +8,7 @@
 <body>
   <header class="topbar"><a class="brand" href="#" aria-label="Wiesler Desktop"><span class="mark">W</span>Wiesler Desktop</a><div class="source-switch" aria-label="数据来源"><button id="live" class="active">实时连接</button><button id="demo">演示数据</button></div></header>
   <main>
-    <nav class="workspace-nav" aria-label="工作台视图"><button id="view-graph" class="active" aria-pressed="true">连接图谱</button><button id="view-monitor" aria-pressed="false">运行监测</button><button id="view-diagnostics" aria-pressed="false">历史诊断</button><button id="view-settings" aria-pressed="false">设置</button></nav>
+    <nav class="workspace-nav" aria-label="工作台视图"><button id="view-graph" class="active" aria-pressed="true">连接图谱</button><button id="view-monitor" aria-pressed="false">运行监测</button><button id="view-diagnostics" aria-pressed="false">历史诊断</button><button id="view-privacy" aria-pressed="false">隐私检查</button><button id="view-settings" aria-pressed="false">设置</button></nav>
     <div class="workspace-content" id="workspace-content">
     <section class="statusbar" id="statusbar" hidden><span id="source-state" role="status">正在启动采集…</span><span id="system-state"></span><span id="capture-state"></span><button id="capture-toggle" type="button">暂停采集</button><span id="snapshot-count" hidden>0 次快照</span></section>
     <section id="egress-panel" class="egress-panel" aria-label="公网出口地址"><div title="按系统路由探测，可能经过 TUN/VPN"><span>系统出口</span><strong id="egress-system-ip">—</strong><span id="egress-system-status">尚未探测</span><span id="egress-system-location" class="egress-location" title="IP 地址库归属地">地理位置未知</span></div><div title="通过 Mihomo 当前路由探测"><span>代理出口</span><strong id="egress-proxy-ip">—</strong><span id="egress-proxy-status">未连接控制器</span><span id="egress-proxy-location" class="egress-location" title="IP 地址库归属地">地理位置未知</span></div><button id="egress-refresh" type="button">刷新出口</button></section>
@@ -27,12 +27,19 @@
 <section class="panel packet-loss" aria-labelledby="loss-title"><div class="panel-head"><h3 id="loss-title">ICMP 丢包率</h3><span>最近 60 次探测 · 系统路由</span></div><form id="loss-form" class="settings"><label for="loss-target">目标 IPv4</label><input id="loss-target" value="1.1.1.1" required spellcheck="false"><button id="loss-start" type="submit">开始监控</button><button id="loss-stop" type="button" disabled>停止</button></form><div class="loss-values"><strong id="loss-rate">—</strong><span id="loss-counts">尚无样本</span><span id="loss-rtt">平均延迟 —</span></div><p id="loss-status" class="settings" role="status">未开启 · 每次完成后间隔 1 秒，超时 2 秒</p><p class="settings">仅测目标 ICMP 回包；目标禁 Ping 或限速也会造成未回包，不代表代理业务丢包率。</p></section>
 <section class="panel request-log"><div class="panel-head"><h3>控制器请求日志</h3><span>最近 100 条 · 本次打开期间</span></div><div class="table-wrap"><table><thead><tr><th>时间</th><th>来源</th><th>HTTP 状态码</th><th>结果</th><th>错误信息</th></tr></thead><tbody id="request-log-rows"><tr><td colspan="5">开始观察后显示请求结果</td></tr></tbody></table></div></section>
     </section>
+<section id="privacy-view" hidden>
+<section class="panel"><div class="panel-head"><h3>网络与隐私检查</h3><span id="privacy-state" role="status">等待采样</span></div>
+<form id="privacy-policy" class="settings"><label><input id="privacy-proxy" type="checkbox"> 所有已观测连接应经代理</label><label for="privacy-threshold">单连接上传阈值（KiB/s）</label><input id="privacy-threshold" type="number" min="1" max="1048576" value="1024" required><button type="submit">应用检查条件</button></form>
+<p class="settings" id="privacy-coverage"></p><div id="privacy-findings" class="privacy-findings"></div></section>
+<section class="panel"><div class="panel-head"><h3>隐私指纹 · 当前页面环境</h3><button id="privacy-environment" type="button">本地自检</button></div><p class="settings">只读取当前 Wiesler WebView 的语言、时区、UA 和屏幕信息；不代表 Chrome 等其他浏览器。</p><pre id="privacy-environment-result" class="report">尚未检查</pre></section>
+<section class="panel"><div class="panel-head"><h3>检查报告</h3><button id="privacy-report" type="button">生成 JSON 报告</button></div><p class="settings">报告包含进程、端点与检查条件，生成后可选中复制。本轮不拦截流量或修改浏览器。</p><textarea id="privacy-report-result" aria-label="隐私检查 JSON 报告" readonly rows="8"></textarea></section>
+</section>
 <section id="diagnostics" class="panel" hidden><div class="panel-head"><h3>历史会话诊断</h3><span>读取 CLI 已保存的证据</span></div><form id="database-form" class="settings"><label for="database">SQLite 路径</label><input id="database" placeholder="C:\path\to\wiesler.sqlite3" required><button type="submit">读取会话</button></form><div class="settings"><label for="session">会话</label><select id="session" disabled><option value="">请先读取数据库</option></select><button id="diagnose" disabled>生成诊断</button></div><p id="db-status" class="settings" role="status">选择已有数据库，不会修改原始证据。</p><pre id="report" class="report"></pre></section>    <section id="settings" class="panel" hidden><div class="panel-head"><h3>代理控制器</h3><span>启动时自动发现本机服务</span></div><div id="controller-tools" class="settings-content">
       <div class="controller-actions"><button id="discover" type="button">重新扫描</button><select id="controller-choice" aria-label="发现的本机控制器" hidden></select><button id="connect-discovered" type="button" hidden>连接所选</button><span id="controller-address"></span></div>
       <details class="controller-advanced"><summary>高级设置</summary><form id="controller-form"><label for="controller">手动地址</label><input id="controller" placeholder="http://127.0.0.1:9090" spellcheck="false" required><button type="submit">连接 / 重连</button></form></details>
     </div><label class="animation-setting"><input id="flow-animation" type="checkbox" checked> 显示上传 / 下载流动点</label></section>
     </div>
   </main>
-  <script src="window-chrome.js"></script><script src="studio-model.js"></script><script src="monitor-tools.js"></script><script src="studio.js"></script>
+  <script src="window-chrome.js"></script><script src="studio-model.js"></script><script src="privacy-model.js"></script><script src="monitor-tools.js"></script><script src="studio.js"></script>
 </body>
 </html>

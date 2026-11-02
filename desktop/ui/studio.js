@@ -36,6 +36,7 @@
     $('capture-toggle').textContent=collecting?'暂停采集':'恢复采集';
   }
   function renderMonitor() {
+    renderPrivacy();
     const f=current, valid=f&&!f.error&&f.download!=null, observed=f&&(mode==='demo'||systemCurrent||controllerFrame&&!controllerFrame.error);
     $('monitor-count').textContent=observed?String(f.flows.length):'—';
     $('monitor-routing').textContent=observed?`直连 ${f.flows.filter(c=>c.routing==='direct').length} · 转发 ${f.flows.filter(c=>c.routing==='proxy').length} · 系统 ${f.flows.filter(c=>c.origin==='system').length}`:'等待采样';
@@ -54,16 +55,49 @@
     }
     $('trend-scale').textContent=`峰值 ${M.bytes(max)}/s`;
   }
+  let privacyPolicy = {expectProxy:false,uploadBytesPerSecond:1024*1024}, privacyEnvironment = null;
+  const expandedPrivacy = new Set();
+  function privacyReport() {
+    return {...window.PrivacyModel.analyze(current,privacyPolicy),
+      collection:mode==='demo'?'demo':collecting&&!document.hidden?'running':'paused',
+      generatedAt:new Date().toISOString(),environment:privacyEnvironment};
+  }
+  function renderPrivacy() {
+    const report=privacyReport();
+    $('privacy-state').textContent=`${mode==='demo'?'演示数据 · ':''}${current?time(current.time):'尚无快照'} · ${report.findings.length} 条线索`;
+    $('privacy-coverage').textContent=`已观测 ${report.coverage.connections} 条连接，${report.coverage.unknownRoutes} 条路由待确认。未覆盖 DNS 查询正文、出口网卡、DoH 和 WebRTC。${report.errors.length?'采集异常：'+report.errors.join('；'):''}`;
+    const list=$('privacy-findings');list.replaceChildren();
+    for(const finding of report.findings){
+      const card=text('article','', 'privacy-finding');
+      card.append(text('h4',`${finding.kind==='network'?'网络路径':'连接异常'} · ${finding.title}`),text('p',finding.detail));
+      const key=JSON.stringify([mode,finding.evidence.connectionId,finding.title]);
+      const details=text('details','');details.open=expandedPrivacy.has(key);
+      details.ontoggle=()=>{if(details.open)expandedPrivacy.add(key);else expandedPrivacy.delete(key);};
+      details.append(text('summary',`${finding.evidence.process} · PID ${finding.evidence.pid} · 查看证据`),text('pre',JSON.stringify(finding.evidence,null,2)));
+      card.append(details);list.append(card);
+    }
+    if(!report.findings.length)list.append(text('p',current?'当前样本未触发检查条件；不表示已排除泄漏。':'等待连接采样。'));
+  }
+  $('privacy-policy').onsubmit=e=>{
+    e.preventDefault();const threshold=Number($('privacy-threshold').value);
+    if(!Number.isFinite(threshold)||threshold<1||threshold>1048576)return;
+    privacyPolicy={expectProxy:$('privacy-proxy').checked,uploadBytesPerSecond:threshold*1024};renderPrivacy();
+  };
+  $('privacy-environment').onclick=()=>{
+    privacyEnvironment=window.PrivacyModel.environment(window.navigator,window.screen,Intl);
+    $('privacy-environment-result').textContent=JSON.stringify(privacyEnvironment,null,2);
+  };
+  $('privacy-report').onclick=()=>{$('privacy-report-result').value=JSON.stringify(privacyReport(),null,2);};
   function selectView(next) {
     view=next;
-    for(const name of ['graph','monitor','diagnostics','settings']){
+    for(const name of ['graph','monitor','diagnostics','privacy','settings']){
       $(`view-${name}`).classList.toggle('active',name===view);
       $(`view-${name}`).setAttribute('aria-pressed',String(name===view));
     }
-    $('graph-view').hidden=view!=='graph';$('monitor-view').hidden=view!=='monitor';$('diagnostics').hidden=view!=='diagnostics';$('settings').hidden=view!=='settings';
+    $('privacy-view').hidden=view!=='privacy';$('graph-view').hidden=view!=='graph';$('monitor-view').hidden=view!=='monitor';$('diagnostics').hidden=view!=='diagnostics';$('settings').hidden=view!=='settings';
     renderStatus();if(view==='graph')render();
   }
-  for(const name of ['graph','monitor','diagnostics','settings'])$(`view-${name}`).onclick=()=>selectView(name);
+  for(const name of ['graph','monitor','diagnostics','privacy','settings'])$(`view-${name}`).onclick=()=>selectView(name);
   function render() {
     const flows=visible();
     if(!flows.some(f=>f.id===selected))selected=flows[0]?.id || null;

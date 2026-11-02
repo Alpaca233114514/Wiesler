@@ -43,3 +43,5 @@
 .pulse{color:var(--blue)}.pulse.down{color:var(--mint)}
 
 html,body{height:100%}body{height:100dvh;display:flex;flex-direction:column;overflow:hidden}.topbar{flex:0 0 auto}main{flex:1;min-height:0;width:100%;display:flex;flex-direction:column;overflow:hidden}.workspace-nav{flex:0 0 auto}.workspace-content{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;padding-right:8px}.inspector,.flow-table{overscroll-behavior:contain}
+
+.privacy-findings{padding:0 22px 22px}.privacy-finding{border-top:1px solid var(--line);padding:16px 0}.privacy-finding h4{margin:0;color:var(--amber)}.privacy-finding p{line-height:1.7}.privacy-finding pre{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}#privacy-proxy{min-width:18px;min-height:18px;flex:none}#privacy-report-result{width:calc(100% - 44px);margin:0 22px 22px;resize:vertical;background:var(--bg);color:var(--text);border:1px solid var(--line);padding:12px}
