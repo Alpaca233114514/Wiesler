@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:">
+  <title>Wiesler · 神经元工作台</title><link rel="stylesheet" href="studio.css"><link rel="stylesheet" href="window-chrome.css">
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="index.html" aria-label="返回监测面板"><span class="mark">W</span>Wiesler</a><div class="source-switch" aria-label="数据来源"><button id="demo" class="active">演示数据</button><button id="live">实时连接</button></div><a class="legacy" href="index.html">监测面板 ↗</a></header>
+  <main>
+    <form id="controller-form" hidden><label for="controller">控制器</label><input id="controller" value="http://127.0.0.1:9090" spellcheck="false"><button type="submit">连接</button></form>
+    <section class="statusbar" id="statusbar" hidden><span id="source-state" role="status">演示数据</span><span id="capture-state"></span><span id="snapshot-count" hidden>0 次快照</span></section>
+    <div class="workbench">
+      <section class="graph-panel">
+        <div class="graph-toolbar"><div class="view-title">图谱 <span id="flow-count">0</span></div><div class="graph-tools"><button id="freeze">冻结</button><button id="zoom-out" aria-label="缩小图谱">−</button><button id="fit">适配</button><button id="zoom-in" aria-label="放大图谱">＋</button></div></div>
+        <div id="graph" aria-label="可拖拽通信图谱"><svg id="network" role="group" aria-label="应用到目标的逻辑连接"><g id="viewport"><g id="edges"></g><g id="nodes"></g></g></svg><div id="graph-empty" hidden>没有匹配的连接</div><div class="legend" title="每次快照出现流量增量时显示一次脉冲，不代表单个数据包。"><span class="send-key">上传 →</span><span class="receive-key">← 下载</span></div></div>
+        <div class="timeline"><button id="now">回到现在</button><input id="timeline" type="range" min="0" max="0" value="0" aria-label="回放最近快照"><output id="frame-time">现在</output></div>
+      </section>
+      <section class="inspector" aria-label="会话检查器"><div class="inspector-heading"><span>会话检查器</span><span id="selection-protocol" class="protocol">TCP</span></div><h2 id="selection-title">选择连接</h2><div id="selection-endpoint" class="endpoint"></div><div class="inspector-tabs" role="tablist"><button data-tab="overview" role="tab" class="active" aria-selected="true">概览</button><button data-tab="events" role="tab" aria-selected="false">事件</button><button data-tab="raw" role="tab" aria-selected="false">原始数据</button></div><div id="inspect-content" role="tabpanel"></div></section>
+      <section class="flows-panel"><div class="flows-heading"><h2>会话</h2><div class="filters"><input id="flow-search" aria-label="搜索应用或目标" placeholder="搜索应用或目标"><select id="flow-protocol" aria-label="筛选协议"><option value="">全部协议</option><option>TCP</option><option>UDP</option></select></div></div><div class="flow-table"><table><thead><tr><th>应用</th><th>目标</th><th>协议</th><th>下载 / 秒</th><th>上传 / 秒</th><th>出口</th></tr></thead><tbody id="flow-rows"></tbody></table></div></section>
+    </div>
+  </main>
+  <script src="window-chrome.js"></script><script src="studio-model.js"></script><script src="studio.js"></script>
+</body>
+</html>

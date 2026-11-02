@@ -4,3 +4,4 @@
 .request-log{margin:22px 0}.request-log .table-wrap{max-height:300px}.http-error{color:#ff9e9e}
 
 .packet-loss{margin-bottom:22px}.loss-values{display:flex;align-items:center;gap:24px;flex-wrap:wrap;padding:0 23px}.loss-values strong{font-size:30px;color:#8bddc2}.packet-loss .settings{margin-bottom:0}
+.studio-entry{display:block;color:#9de9d5;border:1px solid #486a60;border-radius:8px;padding:14px 10px;margin-bottom:20px;text-decoration:none;font-size:16px}

@@ -101,10 +101,11 @@ fn main() {
             tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
-                tauri::WebviewUrl::App("index.html".into()),
+                tauri::WebviewUrl::App("studio.html".into()),
             )
-            .title("Wiesler · Network Observatory")
-            .inner_size(1360.0, 900.0)
+            .title("Wiesler · 神经元工作台")
+            .decorations(false)
+            .inner_size(1040.0, 808.0)
             .min_inner_size(900.0, 640.0)
             .data_directory(data_dir)
             .build()
