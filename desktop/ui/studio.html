@@ -8,7 +8,23 @@
 <body>
   <header class="topbar"><a class="brand" href="#" aria-label="Wiesler Desktop"><span class="mark">W</span>Wiesler Desktop</a></header>
   <main>
-    <nav class="workspace-nav" aria-label="工作台视图"><button id="view-graph" class="active" aria-pressed="true">连接图谱</button><button id="view-monitor" aria-pressed="false">运行监测</button><button id="view-diagnostics" aria-pressed="false">历史诊断</button><button id="view-privacy" aria-pressed="false">隐私检查</button><button id="view-settings" aria-pressed="false">设置</button></nav>
+    <nav class="workspace-nav" aria-label="工作台视图">
+      <button id="view-graph" aria-label="连接图谱" title="连接图谱" class="active" aria-pressed="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11l8-5M7 13l8 5"/><circle cx="5" cy="12" r="2.5"/><circle cx="18" cy="5" r="2.5"/><circle cx="18" cy="19" r="2.5"/></svg>
+      </button>
+      <button id="view-monitor" aria-label="运行监测" title="运行监测" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="M5 13h3l2.5-5 3 8 2-4H19"/></svg>
+      </button>
+      <button id="view-diagnostics" aria-label="历史诊断" title="历史诊断" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 10a8.5 8.5 0 1 1 .7 6M3 5.5v5h5M12 7.5v5l3 2"/></svg>
+      </button>
+      <button id="view-privacy" aria-label="隐私检查" title="隐私检查" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5c2.8 2 5.8 3 8 3.5v5.5c0 4.2-3.5 7.9-8 10-4.5-2.1-8-5.8-8-10V6c2.2-.5 5.2-1.5 8-3.5Z"/><path d="m8.5 12 2.4 2.5 4.7-5"/></svg>
+      </button>
+      <button id="view-settings" aria-label="设置" title="设置" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h8m5 0h3M4 17h3m5 0h8"/><circle cx="14.5" cy="7" r="2.5"/><circle cx="9.5" cy="17" r="2.5"/></svg>
+      </button>
+    </nav>
     <div class="workspace-content" id="workspace-content">
     <section class="statusbar" id="statusbar" hidden><span id="source-state" role="status">正在启动采集…</span><span id="system-state"></span><span id="capture-state"></span><button id="capture-toggle" type="button">暂停采集</button><span id="snapshot-count" hidden>0 次快照</span></section>
     <section id="egress-panel" class="egress-panel" aria-label="公网出口地址"><div title="按系统路由探测，可能经过 TUN/VPN"><span>系统出口</span><strong id="egress-system-ip">—</strong><span id="egress-system-status">尚未探测</span><span id="egress-system-location" class="egress-location" title="IP 地址库归属地">地理位置未知</span></div><div title="通过 Mihomo 当前路由探测"><span>代理出口</span><strong id="egress-proxy-ip">—</strong><span id="egress-proxy-status">未连接控制器</span><span id="egress-proxy-location" class="egress-location" title="IP 地址库归属地">地理位置未知</span></div><button id="egress-refresh" type="button">刷新出口</button></section>

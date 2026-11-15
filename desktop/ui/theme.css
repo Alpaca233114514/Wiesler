@@ -92,33 +92,33 @@ dialog {background:var(--surface);color:var(--text);box-shadow:var(--shadow-2);m
 #download {stroke:var(--mint)}
 #upload {stroke:var(--blue)}
 #fade stop {stop-color:var(--mint)}
-@media (min-width:1001px) {
-  body:has(.workspace-nav) main {max-width:none;padding:0;display:grid;grid-template-columns:184px minmax(0,1fr)}
-  .workspace-nav {flex-direction:column;flex-wrap:nowrap;gap:6px;margin:0;padding:24px 12px;background:var(--surface);border-right:2px solid var(--structure);overflow:auto}
-  .workspace-nav button {text-align:left;background:transparent;border-color:transparent;border-radius:var(--radius-md);padding:10px 16px}
-  .workspace-nav button:hover {background:var(--hover)}
-  .workspace-nav button.active {background:var(--selected);color:var(--primary)}
+.workspace-nav {align-items:center;flex-wrap:nowrap;gap:6px}
+.workspace-nav button {
+  flex:none;display:grid;place-items:center;width:44px;height:44px;padding:0;
+  border:1px solid transparent;border-radius:var(--radius-md);
+  background:transparent;color:var(--muted);
+}
+.workspace-nav svg {width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.workspace-nav button:hover {background:var(--hover);color:var(--text)}
+.workspace-nav button[aria-pressed="true"] {background:var(--selected);color:var(--primary);border-color:currentColor}
+@media (min-width:701px) {
+  body:has(.workspace-nav) main {max-width:none;padding:0;display:grid;grid-template-columns:64px minmax(0,1fr)}
+  .workspace-nav {flex-direction:column;margin:0;padding:16px 0;background:var(--surface);border-inline-end:1px solid var(--structure);overflow:auto}
   .workspace-nav #view-settings {margin-left:0;margin-top:auto}
   .workspace-content {padding:24px;min-width:0}
-}
-@media (max-width:1000px) {
-  .workspace-nav {gap:6px}
-  .workspace-nav button {flex:1;white-space:nowrap;padding:8px 12px}
 }
 @media (max-width:700px) {
   .topbar {padding:0 16px}
   .brand,.native-window .topbar .brand {font-size:17px}
   .native-window .topbar {gap:8px;padding-left:12px}
   .native-window .topbar .brand {overflow:hidden;text-overflow:ellipsis}
-    .workspace-nav {flex-wrap:nowrap;overflow-x:auto;padding:2px 2px 8px}
-  .workspace-nav button {flex:0 0 auto}
+  .workspace-nav {overflow-x:auto;padding:6px;margin-bottom:10px}
 }
 @media (prefers-reduced-motion:no-preference) {
   button,a,input,select {transition:background-color .15s cubic-bezier(.22,1,.36,1),color .15s cubic-bezier(.22,1,.36,1),border-color .15s cubic-bezier(.22,1,.36,1)}
 }
 
 .workspace-content, .flows-panel {container-type:inline-size}
-.workspace-nav button.active {font-weight:600}
 .view-title {margin:0;font-size:1.125rem;line-height:1.4}
 #flow-count {font-size:.8125rem;font-weight:600}
 .graph-tools {gap:0}
