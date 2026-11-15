@@ -70,7 +70,14 @@ button.active,nav button.active {background:var(--selected);color:var(--primary)
 #flow-count,.protocol,.badge {color:var(--primary);background:var(--selected);border-color:transparent}
 .graph-node.selected rect,.graph-node:focus rect {stroke:var(--primary);fill:var(--selected)}
 .graph-node.warning rect {stroke:var(--amber)}
-.inspector-tabs button.active {color:var(--primary);border-bottom-color:var(--primary);background:transparent}
+.inspector-tabs button {position:relative}
+.inspector-tabs button[aria-selected="true"] {color:var(--primary)}
+.inspector-tabs button[aria-selected="true"]::after {
+  content:"";
+  position:absolute;
+  inset:auto .4rem 0;
+  border-block-end:3px solid currentColor;
+}
 .flows-heading h2,.panel-head h3 {font-size:18px}
 tr:hover td {background:var(--hover)}
 tr.selected {background:var(--selected)}
@@ -108,4 +115,58 @@ dialog {background:var(--surface);color:var(--text);box-shadow:var(--shadow-2);m
 }
 @media (prefers-reduced-motion:no-preference) {
   button,a,input,select {transition:background-color .15s cubic-bezier(.22,1,.36,1),color .15s cubic-bezier(.22,1,.36,1),border-color .15s cubic-bezier(.22,1,.36,1)}
+}
+
+.workspace-content, .flows-panel {container-type:inline-size}
+.workspace-nav button.active {font-weight:600}
+.view-title {margin:0;font-size:1.125rem;line-height:1.4}
+#flow-count {font-size:.8125rem;font-weight:600}
+.graph-tools {gap:0}
+.graph-tools button {border-radius:0;margin-inline-start:-1px}
+.graph-tools button:first-child {border-start-start-radius:var(--radius-sm);border-end-start-radius:var(--radius-sm)}
+.graph-tools button:last-child {border-start-end-radius:var(--radius-sm);border-end-end-radius:var(--radius-sm)}
+.graph-tools button:focus-visible {position:relative;z-index:1}
+.egress-panel {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr)) auto;
+  align-items:center;
+  gap:1rem;
+  padding:1rem 1.25rem;
+}
+.egress-panel>div {
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  gap:.25rem;
+}
+.egress-panel>div+div {border-inline-start:1px solid var(--line);padding-inline-start:1rem}
+.egress-panel>div>span:first-child {font-weight:600;color:var(--text)}
+.egress-panel strong {font:600 1.125rem/1.45 Consolas,monospace;color:var(--text)}
+.egress-panel span {overflow-wrap:anywhere}
+.egress-panel .egress-location {white-space:normal}
+.egress-panel>div>span:empty {display:none}
+.inspector-heading {padding-block-end:.75rem;border-block-end:1px solid var(--line);margin-block-end:1rem}
+.inspector-heading>span:first-child {font-size:1rem;font-weight:600;color:var(--text)}
+.inspector dl {display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.65rem 1rem}
+.inspector dt,.inspector dd {margin:0;line-height:1.5}
+#group-session {max-inline-size:100%}
+.session-table .session-app {width:22%}
+.session-table .session-target {width:31%}
+.session-table .session-traffic {width:18%}
+.session-table .session-route {width:29%}
+.session-table .selected td:first-child {border-inline-start:3px solid var(--primary)}
+.session-table button:focus-visible {outline-offset:-2px}
+@container (min-width:47rem) {
+  .workbench {grid-template-columns:minmax(0,1fr) clamp(17rem,26%,23.75rem)}
+}
+@container (max-width:46rem) {
+  .workbench {grid-template-columns:minmax(0,1fr)}
+  .flows-heading {align-items:stretch;flex-direction:column}
+  .filters {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem}
+  .filters input {grid-column:1/-1;width:100%;min-width:0}
+  .filters select {min-width:0;max-width:none}
+}
+@container (max-width:34rem) {
+  .egress-panel {grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:.75rem}
+  .egress-panel button {grid-column:1/-1;justify-self:end}
+  .graph-toolbar {height:auto;min-height:3.75rem;flex-wrap:wrap;gap:.5rem;padding-block:.5rem}
 }
