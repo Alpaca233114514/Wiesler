@@ -194,13 +194,11 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .mark svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.9;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  width: 16px;
+  height: 16px;
+  display: block;
+  fill: currentColor;
+  stroke: none;
 }
 
 .brand-name {

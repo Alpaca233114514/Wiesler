@@ -124,7 +124,7 @@ fn main() {
                 error
             })?;
             log("data directory ready; creating WebView2 window");
-            tauri::WebviewWindowBuilder::new(
+            let mut builder = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("studio.html".into()),
@@ -140,9 +140,11 @@ fn main() {
             .decorations(false)
             .inner_size(1040.0, 808.0)
             .min_inner_size(900.0, 640.0)
-            .data_directory(data_dir)
-            .build()
-            .map_err(|error| {
+            .data_directory(data_dir);
+            if let Some(icon) = app.default_window_icon().cloned() {
+                builder = builder.icon(icon)?;
+            }
+            builder.build().map_err(|error| {
                 log(&format!("WebView2 window creation FAILED: {error:?}"));
                 error
             })?;
