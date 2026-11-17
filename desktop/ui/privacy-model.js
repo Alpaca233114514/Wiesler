@@ -38,9 +38,9 @@
     const hasSample=report.observedAt!=null, partial=report.errors.length>0;
     const total=report.coverage.connections, measured=report.coverage.measuredUploads;
     const checks=[
-      {name:'DNS 路径',state:'unknown',result:!hasSample?'等待采样':dns.length?`${dns.length} 条 DNS 端口连接待核实`:'尚不能判断是否泄漏',
-        reason:dns.length?'观察到目标端口 53 的连接，尚无查询内容和实际出口网卡证据。':'当前样本没有 DNS 端口线索，短连接与加密 DNS 仍可能未被观测。',
-        action:'核对下方连接的进程与目标解析器，并检查代理的 DNS 配置。'},
+      {name:'53 端口连接线索',state:'unknown',result:!hasSample?'等待连接采样':dns.length?`${dns.length} 条连接使用 53 端口`:'连接快照未发现 53 端口',
+        reason:'这里只统计连接端口；持续 DNS 事件与实际网卡报文由上方本地检查采集。',
+        action:'点击“开始本地检查”获取 DNS 查询与泄漏判断。'},
       {name:'代理路径',state:bypass.length?'attention':'unknown',
         result:bypass.length?`${bypass.length} 条连接不符合代理预期`:!report.policy.expectProxy?'尚未设置代理预期':!hasSample?'等待采样':partial||report.coverage.unknownRoutes?'部分连接路径待确认':'已观测连接未触发路由差异',
         reason:bypass.length?'你要求已观测连接经代理，但控制器对这些连接报告了 DIRECT。':!report.policy.expectProxy?'分流中的直连可能是正常行为，需要先明确你的预期。':`${report.coverage.unknownRoutes} 条系统连接缺少路由证据；控制器逻辑路由不等于物理出口。`,

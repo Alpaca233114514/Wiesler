@@ -209,6 +209,21 @@ test('route strips show computer-to-server order without mutating controller evi
   assert.deepEqual(M.routePath(M.normalize({...raw,chains:['DIRECT']})).map(n=>n.label),['电脑','服务器']);
   assert.deepEqual(M.routePath(M.systemFlow(socketSample)).map(n=>n.label),['电脑','路由待确认','服务器']);
 });
+test('inspector stacks multi-hop proxy chains vertically while keeping short routes horizontal',async()=>{
+  const raw={observed_at:1000,http_status:200,download_total:0,upload_total:0,connections:[
+    {id:'multi',download:56500,upload:3400,rule:'DomainSuffix',chains:['VPS-Reality-443','VPS-Auto','Overseas'],metadata:{process:'language_server',pid:35868,network:'tcp',host:'aicode.googleapis.com',source_ip:'127.0.0.1',source_port:50919,destination_port:443}},
+    {id:'single',download:0,upload:0,rule:'Match',chains:['WireGuard-test'],metadata:{process:'chrome',pid:12,network:'tcp',host:'www.youtube.com',source_ip:'127.0.0.1',source_port:50920,destination_port:443}}
+  ]};
+  const ui=setup(async()=>raw);connect(ui);await flush();
+  const multiStrip=ui.get('inspect-content').children[0];
+  assert.equal(multiStrip.className,'route-strip proxy multi-hop');
+  assert.deepEqual(multiStrip.children.map(step=>ui.content(step).trim()),['电脑','Overseas','VPS-Auto','VPS-Reality-443','服务器']);
+  ui.get('flow-rows').children[1].children[0].children[0].onclick();
+  assert.equal(ui.get('inspect-content').children[0].className,'route-strip proxy');
+  const css=fs.readFileSync('desktop/ui/studio.css','utf8');
+  assert.match(css,/\.route-strip\s*\{[^}]*flex-wrap:\s*nowrap;[^}]*overflow:\s*hidden;/s);
+  assert.match(css,/\.route-strip\.multi-hop\s*\{[^}]*flex-direction:\s*column;/s);
+});
 test('host grouping ignores port, case and trailing dot while keeping every connection',()=>{
   const flows=[M.normalize({id:'a',metadata:{host:'Example.org',destination_port:443}}),M.normalize({id:'b',metadata:{host:'example.org.',destination_port:8443}}),M.normalize({id:'c',metadata:{host:'other.example.org',destination_port:443}})];
   const groups=M.groupByHost(flows);assert.equal(groups.length,2);
@@ -330,7 +345,7 @@ test('actual privacy inspection invokes native DNS and both egress paths, then r
     if(command==='inspect_dns')return {observedAt:1000,resolvers:[{server:'198.18.0.2',configuredInterface:'Meta',description:'Tunnel',hardware:false,routeInterface:'Meta',nextHop:'0.0.0.0'}],queries:[{server:'198.18.0.2',domain:'example.com',addresses:['198.18.0.10'],elapsedMs:3,error:null}]};
     return {...snapshot(0),observed_at:1000,http_status:200};
   },async()=>({controllers:[],scanned:0}),async()=>({sockets:[],observed_at_utc:1000}),async args=>({ip:args.viaProxy?'203.0.113.2':'203.0.113.1',observed_at:1000}));
-  connect(ui);await flush();ui.get('view-privacy').onclick();await flush();
+  connect(ui);await flush();ui.get('view-privacy').onclick();await ui.get('privacy-run').onclick();await flush();
   assert.ok(calls.includes('inspect_dns'));
   assert.match(ui.get('privacy-active-title').textContent,/本轮检测完成/);
   const result=ui.content(ui.get('privacy-active-results'));
@@ -345,10 +360,106 @@ test('actual inspection errors stay visible and late results cannot cross a cont
     if(command==='inspect_dns')return new Promise(r=>{resolveDns=r;});
     return {...snapshot(0),observed_at:1000,http_status:200};
   },async()=>({controllers:[],scanned:0}),async()=>({sockets:[],observed_at_utc:1000}),async()=>{throw new Error('出口服务超时');});
-  connect(ui);await flush();ui.get('view-privacy').onclick();await flush();
+  connect(ui);await flush();ui.get('view-privacy').onclick();ui.get('privacy-run').onclick();await flush();
   assert.match(ui.content(ui.get('privacy-active-results')),/出口服务超时/);
   connect(ui);resolveDns({resolvers:[],queries:[]});await flush();
   assert.equal(ui.get('privacy-active-results').children.length,0);
+});
+
+function dnsView(overrides={}){
+  const row={id:1,observedAt:1000,source:'packet',phase:'query',domain:'example.com',queryType:1,answers:[],status:null,pid:null,resolver:'10.0.0.1',transport:'UDP',interface:{name:'WLAN',hardware:true,index:12,componentId:7},direction:'tx',truncated:false};
+  return {policy:'proxy_required',report:{startedAt:1000,endsAt:31000,stoppedAt:null,running:true,packetState:'active',eventState:'active',errors:[],interfaces:[row.interface],coverage:{windowsEvents:1,dnsMessages:1,lostPackets:0,lostEvents:0,queueDrops:0,parseFailures:0,fragments:0,unsupportedPackets:0,incompleteTcp:0,unknownInterfaces:0,retainedRowsDropped:0},observations:[row],leakEvidence:[row],...overrides},assessment:{status:'leak',title:'检测到明文 DNS 绕过隧道',detail:'物理网卡发送证据',physicalQueries:1,encryptedEvents:0,evidenceIds:[1]}};
+}
+test('opening privacy is local; explicit DNS buttons need neither a controller nor typed ports',async()=>{
+  const calls=[];
+  const ui=setup(async(command,args)=>{calls.push({command,args});if(command.startsWith('dns_capture'))return dnsView();return {...snapshot(0),observed_at:1000,http_status:200};});
+  await flush();ui.get('view-privacy').onclick();await flush();
+  assert.ok(!calls.some(c=>c.command==='inspect_dns'||c.command==='dns_capture_start'));
+  ui.get('dns-duration-long').onclick();await ui.get('dns-start').onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.find(c=>c.command==='dns_capture_start').args)),{seconds:120,policy:'proxy_required'});
+  assert.equal(ui.get('dns-start').disabled,true);assert.equal(ui.get('dns-stop').disabled,false);
+  assert.match(ui.content(ui.get('dns-rows')),/example.com/);assert.match(ui.content(ui.get('dns-rows')),/WLAN/);
+  assert.match(ui.get('dns-verdict').textContent,/绕过隧道/);
+  ui.get('privacy-report').onclick();assert.equal(JSON.parse(ui.get('privacy-report-result').value).dnsCapture.report.observations[0].domain,'example.com');
+});
+test('DNS permission failures are visible and do not produce a no-leak conclusion',async()=>{
+  const result=dnsView({running:false,packetState:'permission_required',eventState:'permission_required',errors:['PacketMonitorInitialize 0x80070005'],observations:[],leakEvidence:[]});
+  result.assessment={status:'unavailable',title:'DNS 采集权限不足',detail:'尚未完成 DNS 泄漏检查',physicalQueries:0,encryptedEvents:0,evidenceIds:[]};
+  const ui=setup(async()=>result);await ui.get('dns-start').onclick();
+  assert.match(ui.get('dns-verdict').textContent,/权限不足/);assert.match(ui.content(ui.get('dns-errors')),/0x80070005/);
+  assert.equal(ui.get('dns-stop').disabled,true);assert.equal(ui.get('dns-start').disabled,false);
+});
+test('one start waits for native authorization and cancellation permits an explicit retry only',async()=>{
+  const calls=[];let result=dnsView({packetState:'awaiting_authorization',eventState:'awaiting_authorization'});
+  result.assessment={...result.assessment,status:'awaiting_authorization',title:'等待 Windows 授权'};
+  const ui=setup(async(command)=>{calls.push(command);return result;});await ui.get('dns-start').onclick();
+  assert.match(ui.get('dns-state').textContent,/等待 Windows 授权/);
+  assert.equal(ui.get('dns-start').disabled,true);
+  result={...result,report:{...result.report,running:false,packetState:'cancelled',eventState:'cancelled'},assessment:{...result.assessment,status:'cancelled',title:'已取消检查'}};
+  await ui.get('dns-policy-observe').onclick();
+  assert.equal(ui.get('dns-start').disabled,false);
+  assert.equal(calls.filter(c=>c==='dns_capture_start').length,1);
+  assert.ok(!calls.includes('dns_capture_authorize'));
+  assert.doesNotMatch(fs.readFileSync('desktop/ui/studio.html','utf8'),/id="dns-authorize"/);
+});
+test('DNS observation continues through hide, graph pause and controller changes; stop retains evidence',async()=>{
+  const calls=[];
+  const ui=setup(async(command)=>{calls.push(command);if(command.startsWith('dns_capture'))return dnsView(command==='dns_capture_stop'?{running:false,stoppedAt:5000}:{});return {...snapshot(0),observed_at:1000,http_status:200};});
+  await ui.get('dns-start').onclick();ui.hide(true);ui.get('capture-toggle').onclick();connect(ui);await flush();
+  assert.ok(!calls.includes('dns_capture_stop'));await ui.get('dns-stop').onclick();
+  assert.match(ui.get('dns-state').textContent,/已结束/);assert.match(ui.content(ui.get('dns-rows')),/example.com/);
+  ui.get('privacy-report').onclick();assert.equal(JSON.parse(ui.get('privacy-report-result').value).dnsCapture.report.running,false);
+});
+test('DNS raw names render as text and encrypted events are separate from physical evidence',async()=>{
+  const result=dnsView();result.report.observations.push({...result.report.observations[0],id:2,domain:'<img src=x>',source:'windows-dns',phase:'encrypted_query',transport:'DoH',pid:42,process:'browser.exe',interface:null,direction:null});
+  const ui=setup(async()=>result);await ui.get('dns-start').onclick();ui.get('dns-filter-encrypted').onclick();
+  assert.match(ui.content(ui.get('dns-rows')),/<img src=x>/);assert.match(ui.content(ui.get('dns-rows')),/DoH/);assert.doesNotMatch(ui.content(ui.get('dns-rows')),/example.com/);
+  ui.get('dns-filter-physical').onclick();assert.match(ui.content(ui.get('dns-rows')),/example.com/);assert.doesNotMatch(ui.content(ui.get('dns-rows')),/DoH/);
+});
+test('DNS rejected commands preserve errors instead of silently replacing them with old state',async()=>{
+  const ui=setup(async command=>{if(command==='dns_capture_start')return dnsView();throw new Error('停止命令失败');});
+  await ui.get('dns-start').onclick();await ui.get('dns-stop').onclick();assert.match(ui.content(ui.get('dns-errors')),/停止命令失败/);
+  assert.match(ui.content(ui.get('dns-rows')),/example.com/);
+});
+
+test('connection proxy expectation reacts immediately without submitting threshold settings',async()=>{
+  const ui=await setupWithSamples();
+  ui.get('privacy-proxy').checked=true;ui.get('privacy-proxy').onchange();
+  ui.get('privacy-report').onclick();
+  let report=JSON.parse(ui.get('privacy-report-result').value);
+  assert.equal(report.policy.expectProxy,true);
+  assert.ok(report.findings.some(f=>f.status==='policy_mismatch'));
+  assert.match(ui.content(ui.get('privacy-checks')),/不符合代理预期/);
+  ui.get('privacy-proxy').checked=false;ui.get('privacy-proxy').onchange();
+  ui.get('privacy-report').onclick();report=JSON.parse(ui.get('privacy-report-result').value);
+  assert.equal(report.policy.expectProxy,false);
+  assert.ok(!report.findings.some(f=>f.status==='policy_mismatch'));
+});
+
+test('DNS condition changes reassess completed evidence and clear stale verdict while waiting',async()=>{
+  let finish;
+  const ui=setup(async(command,args)=>{
+    if(command==='dns_capture_start')return dnsView({running:false});
+    return new Promise(resolve=>{finish=()=>resolve({...dnsView({running:false}),policy:args.policy,assessment:{status:'observed',title:'观察到明文 DNS 从物理网卡发出',detail:'仅观察模式',physicalQueries:1,encryptedEvents:0,evidenceIds:[1]}});});
+  });
+  await ui.get('dns-start').onclick();
+  const pending=ui.get('dns-policy-observe').onclick();
+  assert.match(ui.get('dns-verdict').textContent,/重新判断/);
+  assert.equal(ui.get('dns-verdict').className,'');
+  assert.match(ui.get('dns-detail').textContent,/当前条件：仅观察分流/);
+  finish();await pending;
+  assert.match(ui.get('dns-verdict').textContent,/观察到明文/);
+  assert.equal(ui.get('dns-policy-observe').attrs['aria-pressed'],'true');
+  ui.get('privacy-report').onclick();
+  assert.equal(JSON.parse(ui.get('privacy-report-result').value).dnsCapture.policy,'observe');
+});
+
+test('changing DNS condition with no evidence explains why verdict cannot improve',async()=>{
+  const ui=setup(async(command,args)=>({...dnsView({running:false,observations:[],leakEvidence:[]}),policy:args.policy,assessment:{status:'no_sample',title:'尚无网卡 DNS 查询样本',detail:'尚无样本',physicalQueries:0,encryptedEvents:0,evidenceIds:[]}}));
+  await ui.get('dns-start').onclick();await ui.get('dns-policy-observe').onclick();
+  assert.match(ui.get('dns-verdict').textContent,/尚无/);
+  assert.match(ui.get('dns-detail').textContent,/仅观察分流/);
+  assert.match(ui.get('dns-detail').textContent,/切换条件不会补足/);
 });
 
 async function setupWithSamples(){

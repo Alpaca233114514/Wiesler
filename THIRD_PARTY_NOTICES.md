@@ -1,5 +1,12 @@
 # 来源与许可证
 
+## winptap Packet Monitor compatibility
+
+- 来源：[shellrow/winptap](https://github.com/shellrow/winptap)，2026-11-03 核对 `crates/winptap-core/src/wire.rs`、`crates/winptap-pktmon/src/stream.rs` 与 `source.rs`。
+- 许可证：MIT OR Apache-2.0；本项目采用 Apache-2.0，完整许可证见根目录 `LICENSE` 及上游 `LICENSE-APACHE`。
+- 借鉴范围：`src/probes/dns_capture/windows/pktmon.rs` 中驱动 40 字节紧凑元数据与 48 字节公开结构的兼容解析、累计读取丢包计数的差分处理，以及 GUID/MAC 共用字段的识别限制。
+- 修改：适配本项目 DNS 观测、覆盖统计和回调队列；未引入该项目依赖或驱动。
+
 ## DSHObserver
 
 - 项目：[Alpaca233114514/better-dsh — DSHObserver](https://github.com/Alpaca233114514/better-dsh/tree/main/DSHObserver)

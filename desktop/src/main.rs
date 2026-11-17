@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 mod commands;
 mod discovery;
+mod dns_capture;
 mod packet_loss;
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 
@@ -72,6 +73,10 @@ fn report(message: &str) {
     eprintln!("{text}");
 }
 fn main() {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if let Some(result) = wiesler::probes::dns_capture::run_authorized_helper(&args) {
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
     std::panic::set_hook(Box::new(|info| {
         report(&format!(
             "{info}\n{}",
@@ -80,11 +85,26 @@ fn main() {
     }));
     log("starting desktop");
     let result = tauri::Builder::default()
+        .manage(dns_capture::State::default())
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                use tauri::Manager;
+                let state = window.state::<dns_capture::State>();
+                if let Ok(mut capture) = state.0.lock() {
+                    if let Some(capture) = capture.as_mut() {
+                        capture.stop();
+                    }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::snapshot,
             commands::system_snapshot,
             commands::egress_address,
             commands::inspect_dns,
+            dns_capture::dns_capture_start,
+            dns_capture::dns_capture_snapshot,
+            dns_capture::dns_capture_stop,
             discovery::discover_controllers,
             commands::sessions,
             commands::diagnose,
@@ -110,7 +130,7 @@ fn main() {
                 tauri::WebviewUrl::App("studio.html".into()),
             )
             .title("Wiesler Desktop")
-            .background_color(tauri::utils::config::Color(12, 17, 27, 255))
+            .background_color(tauri::utils::config::Color(16, 16, 16, 255))
             .visible(false)
             .on_page_load(|window, payload| {
                 if payload.event() == tauri::webview::PageLoadEvent::Finished {

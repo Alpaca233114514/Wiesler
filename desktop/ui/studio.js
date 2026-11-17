@@ -26,6 +26,7 @@
   }
   function renderStatus() {
     $('source-state').textContent = discovering ? '正在扫描本机控制器…' : current?.error ? `读取失败：${current.error}` : !collecting ? (current ? '已暂停 · 保留最后快照' : discoveryMessage || '尚未连接') : document.hidden ? '窗口隐藏 · 采集暂停' : activeController ? (controllerFrame ? '实时 · Mihomo' : '正在连接代理控制器…') : discoveryMessage || '本机连接采集中';
+    $('source-state').setAttribute('data-tone', current?.error ? 'danger' : (!collecting || discovering || document.hidden || !invoke) ? 'warning' : 'live');
     $('system-state').textContent=!invoke?'系统连接需使用桌面程序':systemError?`系统连接：${systemError}`:systemCurrent?`系统 TCP · ${systemCurrent.sockets.length} 条`:'正在读取系统连接…';
     $('egress-panel').hidden=!['graph','monitor'].includes(view);
     $('discover').disabled=discovering;
@@ -48,16 +49,91 @@
     const max=Math.max(1,...frames.flatMap(f=>[f.rx||0,f.tx||0]));
     for(const direction of ['rx','tx']){
       let connected=false;
+      const segments=[];
       const path=frames.map((f,i)=>{if(f[direction]==null){connected=false;return '';}
+        const x=(60-frames.length+i)*800/59, y=150-f[direction]/max*140;
+        if(!connected)segments.push([]);
+        segments.at(-1).push([x,y]);
         const command=connected?'L':'M';connected=true;
-        return `${command}${(60-frames.length+i)*800/59},${150-f[direction]/max*140}`;}).join(' ');
+        return `${command}${x},${y}`;}).join(' ');
+      // 仅对连续有效区间闭合底部面积，保持采样缺口断开。 / Close area polygons per contiguous segment to preserve gaps.
+      const area=segments.filter(seg=>seg.length>1).map(seg=>`M${seg[0][0]},156 `+seg.map(([x,y])=>`L${x},${y}`).join(' ')+` L${seg.at(-1)[0]},156 Z`).join(' ');
       $(`trend-${direction}`).setAttribute('d',path);
+      $(`trend-${direction}-area`)?.setAttribute('d',area);
     }
     $('trend-scale').textContent=`峰值 ${M.bytes(max)}/s`;
   }
   let privacyPolicy = {expectProxy:false,uploadBytesPerSecond:1024*1024}, privacyEnvironment = null;
   const expandedPrivacy = new Set();
   let activePrivacy = null, privacyRunToken = 0, privacyRunBusy = false;
+  let dnsCapture = null, dnsBusy = false, dnsPolling = false, dnsTimer = null, dnsRevision = 0, dnsSeconds = 30, dnsPolicy = 'proxy_required', dnsFilter = 'all', dnsError = '';
+  const dnsPhases = {started:'开始查询',completed:'解析完成',send:'发送查询',receive:'接收响应',network_query:'网络查询',result:'解析结果',query:'查询报文',response:'响应报文',encrypted_query:'系统加密查询',encrypted_candidate:'加密端口线索'};
+  function renderDns(){
+    const r=dnsCapture?.report, a=dnsCapture?.assessment;
+    $('dns-start').disabled=dnsBusy||!!r?.running||!invoke;$('dns-stop').disabled=dnsBusy||!r?.running;
+    $('dns-policy-proxy').setAttribute('aria-pressed',String(dnsPolicy==='proxy_required'));
+    $('dns-policy-observe').setAttribute('aria-pressed',String(dnsPolicy==='observe'));
+    $('dns-policy-proxy').disabled=$('dns-policy-observe').disabled=dnsBusy;
+    $('dns-duration-short').setAttribute('aria-pressed',String(dnsSeconds===30));$('dns-duration-long').setAttribute('aria-pressed',String(dnsSeconds===120));
+    $('dns-duration-short').disabled=$('dns-duration-long').disabled=dnsBusy||!!r?.running;
+    for(const key of ['all','physical','encrypted'])$(`dns-filter-${key}`).setAttribute('aria-pressed',String(key===dnsFilter));
+    const errors=$('dns-errors');errors.replaceChildren();if(dnsError)errors.append(text('p',dnsError));
+    if(!r){
+      if(dnsError)$('dns-state').textContent='DNS 操作未完成';
+      $('dns-detail').textContent=`当前条件：${dnsPolicy==='proxy_required'?'DNS 应经代理 / 隧道':'仅观察分流'}。点击开始后正常使用应用，采集 DNS 查询与网卡报文。`;
+      return;
+    }
+    const starting=r.packetState==='starting'||r.eventState==='starting';
+    $('dns-state').textContent=`${r.running?(r.packetState==='awaiting_authorization'?'等待 Windows 授权':starting?'正在启动本地采集':'持续采集中'):'采集已结束'} · ${time(r.startedAt)}${r.stoppedAt?' — '+time(r.stoppedAt):''}`;
+    const pending=dnsCapture.policy!==dnsPolicy;
+    const condition=dnsPolicy==='proxy_required'?'DNS 应经代理 / 隧道':'仅观察分流';
+    $('dns-verdict').textContent=pending?'正在按当前条件重新判断':starting?'正在连接 Windows 采集接口':a.title;
+    $('dns-verdict').className=!pending&&a.status==='leak'?'dns-leak':'';
+    $('dns-detail').textContent=`当前条件：${condition}。${pending?'正在使用已有采集记录重算，无需重新采集。':starting?'正在自动发现网卡并订阅 DNS 事件。':a.detail}${!pending&&['incomplete','no_sample','unavailable'].includes(a.status)?' 切换条件不会补足缺失的采集证据。':''}`;
+    const c=r.coverage;
+    $('dns-counts').textContent=`${c.windowsEvents} 条系统 DNS 事件 · ${c.dnsMessages} 条明文 DNS 报文 · ${a.physicalQueries} 条物理出口查询 · ${a.encryptedEvents} 条系统加密查询`;
+    for(const message of r.errors)errors.append(text('p',message));
+    const status={active:'已接通',starting:'启动中',awaiting_authorization:'等待授权',cancelled:'已取消',permission_required:'权限不足',unsupported:'不可用',failed:'异常'};
+    $('dns-coverage').textContent=`网卡捕获：${status[r.packetState]||r.packetState}；系统 DNS 事件：${status[r.eventState]||r.eventState}。丢失报文 ${c.lostPackets}，丢失事件 ${c.lostEvents}，队列丢失 ${c.queueDrops}，解析失败 ${c.parseFailures}，未重组 IP 分片 ${c.fragments}，不支持的帧 ${c.unsupportedPackets}，不完整 TCP ${c.incompleteTcp}，未知网卡 ${c.unknownInterfaces}，超出保留上限 ${c.retainedRowsDropped}。Windows DoH/DoT 可见；应用自带加密 DNS 的正文不保证可见。`;
+    const interfaces=$('dns-interfaces');interfaces.replaceChildren();
+    for(const i of r.interfaces)interfaces.append(text('p',`${i.name} · ${i.hardware===true?'物理网卡':i.hardware===false?'虚拟接口':'类型未知'} · 接口 ${i.index??'未知'} · 组件 ${i.componentId}`));
+    const evidence=new Set(a.evidenceIds);
+    const source=dnsFilter==='physical'?(r.leakEvidence||r.observations.filter(o=>evidence.has(o.id))):r.observations;
+    const filtered=source.filter(o=>dnsFilter!=='encrypted'||['DoH','DoT','TLS/853 candidate','QUIC/853 candidate'].includes(o.transport));
+    const rows=$('dns-rows');rows.replaceChildren();
+    for(const o of filtered.slice(-100).reverse()){
+      const tr=text('tr','',evidence.has(o.id)?'dns-evidence':'');
+      const type={1:'A',2:'NS',5:'CNAME',12:'PTR',15:'MX',16:'TXT',28:'AAAA',65:'HTTPS'}[o.queryType]||o.queryType||'—';
+      const result=[dnsPhases[o.phase]||o.phase,o.answers.join('、'),o.status!=null?`状态 ${o.status}`:'',o.truncated?'响应截断':''].filter(Boolean).join(' · ');
+      const direction={tx:'发送',rx:'接收',unknown:'方向未知'}[o.direction]||'事件记录';
+      const values=[`${time(o.observedAt)} · ${o.source==='packet'?'网卡报文':'Windows 事件'}`,`${o.domain||'加密正文不可见'} · ${type}`,`${o.transport} · ${result}`,o.pid?`${o.process||'进程名不可用'} · PID ${o.pid}`:'未关联进程',o.resolver||'未提供',`${o.interface?.name||'未提供实际接口'} · ${direction}`];
+      for(const [i,value] of values.entries()){const cell=text('td',value);cell.setAttribute('data-label',['时间 / 来源','查询','阶段 / 结果','进程','解析器','接口 / 方向'][i]);tr.append(cell);}rows.append(tr);
+    }
+    if(!filtered.length){const tr=text('tr',''),td=text('td',r.running?'等待符合条件的 DNS 记录':'本轮没有符合条件的记录');td.colSpan=6;tr.append(td);rows.append(tr);}
+    $('dns-rows-status').textContent=`显示最近 ${Math.min(filtered.length,100)} / ${filtered.length} 条；完整记录可生成 JSON 报告`;
+  }
+  async function pollDns(){
+    clearTimeout(dnsTimer);if(!invoke||dnsBusy)return;
+    if(dnsPolling){dnsTimer=setTimeout(pollDns,250);return;}
+    dnsPolling=true;
+    const revision=dnsRevision;
+    try{const result=await invoke('dns_capture_snapshot',{policy:dnsPolicy});if(revision!==dnsRevision)return;dnsCapture=result;dnsError='';renderDns();}
+    catch(error){if(revision!==dnsRevision)return;dnsError=`读取采集状态失败：${error?.message||String(error)}`;renderDns();}
+    finally{dnsPolling=false;}
+    if(revision===dnsRevision&&dnsCapture?.report.running)dnsTimer=setTimeout(pollDns,1000);
+  }
+  async function controlDns(command){
+    if(!invoke||dnsBusy)return;
+    dnsBusy=true;dnsError='';dnsRevision++;clearTimeout(dnsTimer);renderDns();
+    try{dnsCapture=await invoke(command,{seconds:dnsSeconds,policy:dnsPolicy});}
+    catch(error){dnsError=`DNS 操作失败：${error?.message||String(error)}`;}
+    finally{dnsBusy=false;renderDns();if(dnsCapture?.report.running)dnsTimer=setTimeout(pollDns,500);}
+  }
+  $('dns-start').onclick=()=>controlDns('dns_capture_start');$('dns-stop').onclick=()=>controlDns('dns_capture_stop');
+  for(const [id,policy] of [['dns-policy-proxy','proxy_required'],['dns-policy-observe','observe']])$(id).onclick=()=>{if(dnsBusy)return;dnsPolicy=policy;dnsRevision++;renderDns();if(dnsCapture)return pollDns();};
+  for(const [id,seconds] of [['dns-duration-short',30],['dns-duration-long',120]])$(id).onclick=()=>{if(dnsBusy||dnsCapture?.report.running)return;dnsSeconds=seconds;renderDns();};
+  for(const key of ['all','physical','encrypted'])$(`dns-filter-${key}`).onclick=()=>{dnsFilter=key;renderDns();};
+  renderDns();
   function renderActivePrivacy(){
     const list=$('privacy-active-results');list.replaceChildren();
     if(!activePrivacy){$('privacy-active-title').textContent='尚未执行实际检测';$('privacy-active-status').textContent='点击开始检测，读取 DNS、测试解析并对比公网出口。';return;}
@@ -92,7 +168,7 @@
   function privacyReport() {
     return {...window.PrivacyModel.analyze(current,privacyPolicy),
       collection:collecting&&!document.hidden?'running':'paused',
-      generatedAt:new Date().toISOString(),environment:privacyEnvironment,activeInspection:activePrivacy};
+      generatedAt:new Date().toISOString(),environment:privacyEnvironment,activeInspection:activePrivacy,dnsCapture};
   }
   function renderPrivacy() {
     const report=privacyReport(), summary=window.PrivacyModel.summarize(report);
@@ -104,7 +180,7 @@
       card.append(text('h4',check.name),text('strong',check.result),text('p',check.reason),text('p',`建议：${check.action}`,'privacy-action'));checks.append(card);
     }
     $('privacy-state').textContent=`${current?time(current.time):'尚无快照'} · ${report.findings.length} 条线索`;
-    $('privacy-coverage').textContent=`已观测 ${report.coverage.connections} 条连接，${report.coverage.unknownRoutes} 条路由待确认。未覆盖 DNS 查询正文、出口网卡、DoH 和 WebRTC。${report.errors.length?'采集异常：'+report.errors.join('；'):''}`;
+    $('privacy-coverage').textContent=`连接快照包含 ${report.coverage.connections} 条连接，${report.coverage.unknownRoutes} 条路由待确认。DNS 查询正文和网卡证据请查看上方本地检查；连接快照不含这些信息。${report.errors.length?'采集异常：'+report.errors.join('；'):''}`;
     const list=$('privacy-findings');list.replaceChildren();
     for(const finding of report.findings){
       const card=text('article','', 'privacy-finding');
@@ -122,6 +198,9 @@
     }
     if(!report.findings.length)list.append(text('p',current?'当前样本未触发检查条件；不表示已排除泄漏。':'等待连接采样。'));
   }
+  $('privacy-proxy').onchange=()=>{
+    privacyPolicy={...privacyPolicy,expectProxy:$('privacy-proxy').checked};renderPrivacy();
+  };
   $('privacy-policy').onsubmit=e=>{
     e.preventDefault();const threshold=Number($('privacy-threshold').value);
     if(!Number.isFinite(threshold)||threshold<1||threshold>1048576)return;
@@ -137,6 +216,7 @@
   };
   $('privacy-report').onclick=()=>{const report=privacyReport();$('privacy-report-result').value=JSON.stringify({...report,interpretation:window.PrivacyModel.summarize(report)},null,2);};
   function selectView(next) {
+    if(view!==next)$('workspace-content').scrollTop=0;
     view=next;
     for(const name of ['graph','monitor','diagnostics','privacy','settings']){
       $(`view-${name}`).classList.toggle('active',name===view);
@@ -144,7 +224,7 @@
     }
     $('privacy-view').hidden=view!=='privacy';$('graph-view').hidden=view!=='graph';$('monitor-view').hidden=view!=='monitor';$('diagnostics').hidden=view!=='diagnostics';$('settings').hidden=view!=='settings';
     renderStatus();if(view==='graph')render();
-    if(view==='privacy'&&!activePrivacy&&invoke)runPrivacy();
+    if(view==='privacy'&&dnsCapture)pollDns();
   }
   for(const name of ['graph','monitor','diagnostics','privacy','settings'])$(`view-${name}`).onclick=()=>selectView(name);
   function render() {
@@ -177,7 +257,7 @@
     if(group){if(group.path!==path){group.path=path;for(const item of group.dots)item.motion.setAttribute('path',path);}return;}
     group={path,dots:[],exiting:false};pulseGroups.set(key,group);
     for(const phase of [0,.45]){
-      const dot=svg('circle',{r:down?4.5:3.5,class:`pulse${down?' down':''}`});
+      const dot=svg('circle',{r:down?3.2:2.6,class:`pulse${down?' down':''}`});
       const motion=svg('animateMotion',{dur:'0.9s',begin:'indefinite',repeatCount:'indefinite',path,keyPoints:down?'1;0':'0;1',keyTimes:'0;1',calcMode:'linear',fill:'freeze'});
       dot.append(motion);$('pulses').append(dot);motion.beginElementAt?.(-phase);
       group.dots.push({dot,motion,started:Date.now()-phase*1000,timer:null});
@@ -205,27 +285,29 @@
     const leader=list=>list.find(f=>f.id===selected)||list[0];
     if(drawn.length<flows.length)$('flow-count').textContent=`${drawn.length} / ${flows.length}`;
     const nodes=[];
+    const slotY=(i,count)=>count<=1?height/2:46+i*(height-86)/(count-1);
     buckets.forEach((bucket,i)=>nodes.push({key:bucket.key,label:bucket.label,sub:`${bucket.flows.length} 条连接`,app:true,
-      id:leader(bucket.flows).id,x:appWidth/2+(compact?12:24),y:65+i*(height-135)/Math.max(1,buckets.length-1)}));
+      id:leader(bucket.flows).id,x:appWidth/2+(compact?12:24),y:slotY(i,buckets.length)}));
     displayed.forEach((group,i)=>nodes.push({key:`host:${group.key}`,label:group.label,
       sub:group.flows.length>1?`${group.flows.length} 条连接 · ${new Set(group.flows.map(f=>f.port)).size} 个端口`:`${group.flows[0].protocol} :${group.flows[0].port}`,
       count:group.flows.length,id:leader(group.flows).id,flows:group.flows,
-      x:width-targetWidth/2-(compact?12:24),y:42+i*(height-95)/Math.max(1,displayed.length-1)}));
+      x:width-targetWidth/2-(compact?12:24),y:slotY(i,displayed.length)}));
     nodes.forEach(n=>{const p=positions.get(n.key);if(p)Object.assign(n,p);});
     for(const group of displayed)for(const bucket of buckets){
       const members=group.flows.filter(f=>appKey(f.app)===bucket.key);if(!members.length)continue;
       const f=leader(members),a=nodes.find(n=>n.key===bucket.key),b=nodes.find(n=>n.key===`host:${group.key}`);
       const aw=appWidth/2,bw=targetWidth/2;
-      const d=`M ${a.x+aw} ${a.y} C ${a.x+aw+80} ${a.y},${b.x-bw-80} ${b.y},${b.x-bw} ${b.y}`;
+      const bend=Math.min(80,Math.max(0,(b.x-bw-a.x-aw)/2));
+      const d=`M ${a.x+aw} ${a.y} C ${a.x+aw+bend} ${a.y},${b.x-bw-bend} ${b.y},${b.x-bw} ${b.y}`;
       const rx=members.reduce((sum,f)=>sum+(f.rx||0),0),tx=members.reduce((sum,f)=>sum+(f.tx||0),0);
       const active=members.some(f=>f.id===selected), warning=(shown()?.events || []).some(e=>members.some(f=>f.id===e.id)&&e.level==='warning');
-      const edge=svg('path',{d,class:`edge${active?' selected':''}${warning?' warning':''}`,'stroke-width':Math.min(6,1.5+Math.log2(1+rx+tx)/5)});
+      const edge=svg('path',{d,class:`edge${active?' selected':''}${warning?' warning':''}`,'stroke-width':Math.min(2.8,1.2+Math.log2(1+rx+tx)/14)});
       const hit=svg('path',{d,class:'edge-hit',tabindex:0,role:'button','aria-label':`${bucket.label} 到 ${group.label}，${members.length} 条连接`});
       hit.onclick=()=>choose(f.id);hit.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose(f.id);}};
       hit.onpointerdown=e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();drag={id:f.id,start:point(e),origin:{...pan},moved:false};$('network').setPointerCapture(e.pointerId);};
       $('edges').append(edge,hit);
       if(animate){
-        const motionPath=`M ${a.x+aw-14} ${a.y} L ${a.x+aw} ${a.y} C ${a.x+aw+80} ${a.y},${b.x-bw-80} ${b.y},${b.x-bw} ${b.y} L ${b.x-bw+14} ${b.y}`;
+        const motionPath=`M ${a.x+aw-14} ${a.y} L ${a.x+aw} ${a.y} C ${a.x+aw+bend} ${a.y},${b.x-bw-bend} ${b.y},${b.x-bw} ${b.y} L ${b.x-bw+14} ${b.y}`;
         for(const [rate,down] of [[tx,false],[rx,true]])if(rate>0){
           const key=JSON.stringify([bucket.key,group.key,down]);activePulses.add(key);ensurePulses(key,motionPath,down);
         }
@@ -234,15 +316,16 @@
     // 保留在途动画，停止时先抵达节点；采样刷新不重建移动点。 / Keep in-flight dots across samples and drain at the destination.
     for(const [key,group] of pulseGroups)if(!activePulses.has(key))retirePulses(key,group,!animate);
     for(const n of nodes){
-      const w=n.app?appWidth:targetWidth,h=54;
+      const w=n.app?appWidth:targetWidth,h=46;
       const warning=!n.app&&(shown()?.events || []).some(e=>n.flows.some(f=>f.id===e.id)&&e.level==='warning');
       const group=svg('g',{class:`graph-node${n.app?' app':''}${n.id===selected?' selected':''}${warning?' warning':''}`,transform:`translate(${n.x} ${n.y})`,tabindex:0,role:'button','aria-label':`${n.label}，${n.sub}${warning?'，有异常事件':''}`,'data-key':n.key});
-      if(n.count>1)for(const offset of [8,4])group.append(svg('rect',{x:-w/2+offset,y:-h/2+offset,width:w,height:h,rx:10,class:'stack-layer'}));
-      const rect=svg('rect',{x:-w/2,y:-h/2,width:w,height:h,rx:10});
+      if(n.count>1)for(const offset of [5,2.5])group.append(svg('rect',{x:-w/2+offset,y:-h/2+offset,width:w,height:h,rx:8,class:'stack-layer'}));
+      const rect=svg('rect',{x:-w/2,y:-h/2,width:w,height:h,rx:8,class:'node-card'});
+      const accent=svg('rect',{x:-w/2+5,y:-10,width:2.5,height:20,rx:1.25,class:'node-accent'});
       const title=svg('title',{});title.textContent=n.label;
-      const label=svg('text',{x:-w/2+14,y:-4});label.textContent=n.label.length>(compact?15:28)?n.label.slice(0,compact?13:26)+'…':n.label;
-      const sub=svg('text',{x:-w/2+14,y:17,class:'node-sub'});sub.textContent=n.sub+(warning?' · 超时':'');
-      group.append(rect,label,sub,svg('circle',{cx:n.app?w/2:-w/2,cy:0,r:5,class:'port'}),title);
+      const label=svg('text',{x:-w/2+14,y:-3});label.textContent=n.label.length>(compact?15:28)?n.label.slice(0,compact?13:26)+'…':n.label;
+      const sub=svg('text',{x:-w/2+14,y:13,class:'node-sub'});sub.textContent=n.sub+(warning?' · 超时':'');
+      group.append(rect,accent,label,sub,svg('circle',{cx:n.app?w/2:-w/2,cy:0,r:4,class:'port'}),title);
       group.onclick=()=>choose(n.id);group.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose(n.id);}};
       group.onpointerdown=e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();drag={id:n.id,key:n.key,start:point(e),origin:{x:n.x,y:n.y},moved:false};$('network').setPointerCapture(e.pointerId);};
       $('nodes').append(group);
@@ -263,7 +346,7 @@
   $('zoom-out').onclick=()=>{scale=Math.max(.55,scale-.15);transform();};
   $('fit').onclick=()=>{scale=1;pan={x:0,y:0};positions.clear();render();};
   function routeStrip(flow){
-    const nodes=M.routePath(flow),strip=text('ol','',`route-strip ${flow.routing}`);
+    const nodes=M.routePath(flow),strip=text('ol','',`route-strip ${flow.routing}${nodes.length>3?' multi-hop':''}`);
     strip.setAttribute('aria-label',`${flow.routing==='direct'?'直连':'逻辑路由'}：${nodes.map(n=>n.label).join(' → ')}`);
     strip.title=flow.routing==='direct'?'DIRECT · 直连':flow.origin==='system'?'系统连接 · 路由待确认':'逻辑路由；策略组不代表物理服务器跳点';
     for(const node of nodes){
