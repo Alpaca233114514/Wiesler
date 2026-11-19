@@ -497,8 +497,10 @@ unsafe extern "system" fn packet(context: Handle, descriptor: *const Descriptor)
     // 扣除已由 ERROR_INSUFFICIENT_BUFFER(122) 归因的超长包，保留真实读/写丢包。 / Exclude 122-attributed oversized skips from read-loss while keeping real drops.
     let accounted_oversized = consume_credit(&sink.oversized_read_credit, read_delta);
     let unexplained_read_loss = read_delta - accounted_oversized;
-    sink.packet_loss
-        .fetch_add(d.missed_write as u64 + unexplained_read_loss, Ordering::Relaxed);
+    sink.packet_loss.fetch_add(
+        d.missed_write as u64 + unexplained_read_loss,
+        Ordering::Relaxed,
+    );
     if d.packet_length > 9000 {
         sink.oversized_warnings.fetch_add(1, Ordering::Relaxed);
         return;
