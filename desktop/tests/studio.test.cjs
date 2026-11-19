@@ -20,7 +20,7 @@ test('desktop and Android field conventions preserve IPv6 endpoints',()=>{
   const f=M.normalize({id:'v6',metadata:{sourceIP:'::1',sourcePort:5555,destinationIP:'2001:db8::1',destinationPort:443}});
   assert.equal(f.destination,'[2001:db8::1]:443');assert.equal(f.source,'[::1]:5555');
 });
-function setup(invoke, discovery = async()=>({controllers:[],scanned:0}), system = async()=>({sockets:[],observed_at_utc:1000}), egress = async()=>({ip:'203.0.113.1',observed_at:1000})){
+function setup(invoke, discovery = async()=>({controllers:[],scanned:0}), system = async()=>({sockets:[],observed_at_utc:1000}), egress = async()=>({ip:'203.0.113.1',observed_at:1000}), databases = async()=>({databases:[],scanned_dirs:[]})){
   class Element{
     constructor(){this.value='';this.textContent='';this.children=[];this.dataset={};this.attrs={};this.classList={toggle(){}};}
     append(...nodes){for(const node of nodes){node.parent=this;this.children.push(node);}}replaceChildren(...nodes){for(const node of this.children)node.parent=null;this.children=[];this.append(...nodes);}
@@ -29,7 +29,7 @@ function setup(invoke, discovery = async()=>({controllers:[],scanned:0}), system
   }
   const elements=new Map(),get=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
   const timers=new Map();let timerId=0;
-  const window={StudioModel:M,PrivacyModel:require('../ui/privacy-model.js'),innerWidth:1360,addEventListener(){},matchMedia:()=>({matches:false}),__TAURI__:invoke?{core:{invoke:(command,args)=>command==='discover_controllers'?discovery():command==='system_snapshot'?system():command==='egress_address'?egress(args):invoke(command,args)}}:null};
+  const window={StudioModel:M,PrivacyModel:require('../ui/privacy-model.js'),innerWidth:1360,addEventListener(){},matchMedia:()=>({matches:false}),__TAURI__:invoke?{core:{invoke:(command,args)=>command==='discover_controllers'?discovery():command==='system_snapshot'?system():command==='egress_address'?egress(args):command==='discover_databases'?databases(args):invoke(command,args)}}:null};
   const listeners={};
   const context=vm.createContext({window,document:{hidden:false,getElementById:get,createElement:()=>new Element(),createElementNS:()=>new Element(),querySelectorAll:()=>[],addEventListener:(event,fn)=>{(listeners[event] ||= []).push(fn);}},setTimeout:(fn,delay)=>{timers.set(++timerId,{fn,delay});return timerId;},clearTimeout:id=>timers.delete(id)});
   vm.runInContext(fs.readFileSync('desktop/ui/monitor-tools.js','utf8'),context);
@@ -127,6 +127,77 @@ test('integrated diagnostics and ICMP dispatch real command names and arguments'
   ui.get('view-monitor').onclick();ui.get('loss-target').value='127.0.0.1';ui.get('loss-form').onsubmit({preventDefault(){}});await flush();
   assert.equal(calls[2].command,'ping');assert.equal(calls[2].args.targetIp,'127.0.0.1');assert.equal(ui.get('loss-rate').textContent,'0.0%');
   ui.hide(true);assert.equal(ui.get('loss-stop').disabled,true);
+});
+test('opening diagnostics auto-discovers databases, loads the newest sessions and supports switching',async()=>{
+  const calls=[];
+  const ui=setup(
+    async(command,args)=>{
+      calls.push({command,args});
+      if(command==='sessions')return args.database.endsWith('new.sqlite3')
+        ?[{session_id:'s-new',started_at_utc:2000,event_count:5}]
+        :[{session_id:'s-old',started_at_utc:1000,event_count:2}];
+      if(command==='diagnose')return `# Report for ${args.session}`;
+      throw new Error('unexpected command');
+    },
+    undefined,
+    undefined,
+    undefined,
+    async()=>({
+      scanned_dirs:['C:\\Wiesler\\data'],
+      databases:[
+        {path:'C:\\Wiesler\\data\\new.sqlite3',name:'new.sqlite3',directory:'C:\\Wiesler\\data',session_count:1,latest_session_at_utc:2000},
+        {path:'C:\\Wiesler\\data\\old.sqlite3',name:'old.sqlite3',directory:'C:\\Wiesler\\data',session_count:1,latest_session_at_utc:1000},
+      ],
+    })
+  );
+  ui.get('view-diagnostics').onclick();
+  await flush();await flush();
+  assert.equal(ui.get('database-choice').disabled,false);
+  assert.equal(ui.get('database-choice').value,'C:\\Wiesler\\data\\new.sqlite3');
+  assert.equal(ui.get('database-manual').open,false);
+  assert.equal(ui.get('session').value,'s-new');
+  assert.equal(ui.get('diagnose').disabled,false);
+  assert.match(ui.get('db-status').textContent,/已发现 2 个证据库/);
+  await ui.get('diagnose').onclick();
+  assert.equal(ui.get('report').textContent,'# Report for s-new');
+  ui.get('database-choice').value='C:\\Wiesler\\data\\old.sqlite3';
+  ui.get('database-choice').onchange();
+  await flush();
+  assert.equal(ui.get('session').value,'s-old');
+  assert.equal(calls.filter(c=>c.command==='sessions').length,2);
+});
+test('empty database discovery opens manual fallback and accepts directory paths',async()=>{
+  const scanArgs=[];
+  const ui=setup(
+    async(command,args)=>{
+      if(command==='sessions')return [{session_id:'s-custom',started_at_utc:3000,event_count:9}];
+      throw new Error('unexpected command');
+    },
+    undefined,
+    undefined,
+    undefined,
+    async args=>{
+      scanArgs.push(args);
+      if(args?.extraDirs?.includes('D:\\custom-logs')){
+        return {
+          scanned_dirs:['D:\\custom-logs'],
+          databases:[{path:'D:\\custom-logs\\session.sqlite3',name:'session.sqlite3',directory:'D:\\custom-logs',session_count:1,latest_session_at_utc:3000}],
+        };
+      }
+      return {scanned_dirs:['C:\\Wiesler\\data'],databases:[]};
+    }
+  );
+  ui.get('view-diagnostics').onclick();
+  await flush();
+  assert.equal(ui.get('database-manual').open,true);
+  assert.equal(ui.get('database-choice').disabled,true);
+  assert.match(ui.get('db-status').textContent,/未发现证据库/);
+  ui.get('database').value='D:\\custom-logs';
+  await ui.get('database-form').onsubmit({preventDefault(){}});
+  await flush();
+  assert.equal(scanArgs.length,2);
+  assert.equal(ui.get('database-choice').value,'D:\\custom-logs\\session.sqlite3');
+  assert.equal(ui.get('session').value,'s-custom');
 });
 test('live sources never inherit synthetic events and global counters rebaseline gaps',()=>{
   const a=M.frame(snapshot(20),null,1000),b=M.frame(snapshot(21),a,2000);

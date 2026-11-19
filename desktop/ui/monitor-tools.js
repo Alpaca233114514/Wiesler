@@ -20,18 +20,187 @@
       $('request-log-rows').append(tr);
     }
   }
-  let dbGeneration = 0, loadedDatabase = '';
-  $('database').oninput = () => { dbGeneration++; loadedDatabase = ''; $('session').replaceChildren(); $('session').disabled = true; $('diagnose').disabled = true; $('report').textContent = ''; $('db-status').textContent = '路径已变更，请重新读取会话。'; };
-  $('database-form').onsubmit = async e => {
-    e.preventDefault(); const token = ++dbGeneration; loadedDatabase = ''; $('session').replaceChildren(); $('session').disabled = true; $('diagnose').disabled = true; $('report').textContent = ''; $('db-status').textContent = '正在读取…';
+  const DB_DIRS_KEY = 'wiesler.diagnostics.dirs';
+  let dbGeneration = 0, loadedDatabase = '', dbDiscoveredOnce = false, dbDiscoverBusy = false, discoveredDatabases = [];
+  function readSavedDirs() {
+    try {
+      const raw = window.localStorage?.getItem(DB_DIRS_KEY);
+      const list = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list.filter(item => typeof item === 'string' && item.trim()) : [];
+    } catch (_) { return []; }
+  }
+  function rememberDir(dir) {
+    const clean = typeof dir === 'string' ? dir.trim() : '';
+    if (!clean) return;
+    try {
+      const next = [clean, ...readSavedDirs().filter(item => item.toLowerCase() !== clean.toLowerCase())].slice(0, 8);
+      window.localStorage?.setItem(DB_DIRS_KEY, JSON.stringify(next));
+    } catch (_) {}
+  }
+  function parentDir(path) {
+    const clean = path.replace(/[\\/]+$/, '');
+    const cut = Math.max(clean.lastIndexOf('\\'), clean.lastIndexOf('/'));
+    return cut > 0 ? clean.slice(0, cut) : '';
+  }
+  function shortDir(dir) {
+    const parts = dir.replace(/[\\/]+$/, '').split(/[\\/]+/).filter(Boolean);
+    return parts.slice(-2).join('\\') || dir;
+  }
+  function isInsideDir(filePath, dir) {
+    const norm = value => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const target = norm(filePath), base = norm(dir);
+    return Boolean(base) && (target === base || target.startsWith(`${base}/`));
+  }
+  function formatDbLabel(db) {
+    const count = Number.isFinite(db.session_count) ? `${db.session_count} 个会话` : '手动指定';
+    return `${db.name} · ${count}${db.directory ? ` · ${shortDir(db.directory)}` : ''}`;
+  }
+  function renderDatabaseChoices(selectedPath = '') {
+    const choice = $('database-choice');
+    if (!choice) return;
+    choice.replaceChildren();
+    if (!discoveredDatabases.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = '未在默认目录发现 Wiesler 证据库';
+      choice.append(option);
+      choice.value = '';
+      choice.title = '';
+      choice.disabled = true;
+      return;
+    }
+    for (const db of discoveredDatabases) {
+      const option = document.createElement('option');
+      option.value = db.path;
+      option.title = db.path;
+      option.textContent = formatDbLabel(db);
+      choice.append(option);
+    }
+    choice.disabled = false;
+    const active = selectedPath && discoveredDatabases.some(db => db.path === selectedPath) ? selectedPath : discoveredDatabases[0].path;
+    choice.value = active;
+    choice.title = active;
+  }
+  function syncManualChoice(database, sessionCount) {
+    if (!database) return;
+    const existing = discoveredDatabases.find(db => db.path === database);
+    if (existing) {
+      existing.session_count = sessionCount;
+    } else {
+      const cut = Math.max(database.lastIndexOf('\\'), database.lastIndexOf('/'));
+      discoveredDatabases = [{
+        path: database,
+        name: cut >= 0 ? database.slice(cut + 1) : database,
+        directory: cut > 0 ? database.slice(0, cut) : '',
+        session_count: sessionCount,
+      }, ...discoveredDatabases];
+    }
+    renderDatabaseChoices(database);
+  }
+  async function loadSessions(database, options = {}) {
+    const token = ++dbGeneration;
+    loadedDatabase = '';
+    $('session').replaceChildren();
+    $('session').disabled = true;
+    $('diagnose').disabled = true;
+    $('report').textContent = '';
+    $('db-status').textContent = '正在读取会话…';
     try {
       if (!invoke) throw new Error('请使用桌面程序');
-      const database = $('database').value.trim(), sessions = await invoke('sessions',{database});
+      const list = await invoke('sessions', {database});
       if (token !== dbGeneration) return;
       loadedDatabase = database;
-      for (const s of sessions.reverse()) { const option=document.createElement('option'); option.value=s.session_id; option.textContent=`${new Date(s.started_at_utc).toLocaleString()} · ${s.event_count} 事件 · ${s.session_id}`; $('session').append(option); }
-      $('session').disabled = !sessions.length; $('diagnose').disabled = !sessions.length; $('db-status').textContent = sessions.length ? `已读取 ${sessions.length} 个会话` : '数据库尚无会话';
-    } catch(error) { if (token === dbGeneration) $('db-status').textContent = `读取失败：${String(error)}`; }
+      $('database').value = database;
+      rememberDir(parentDir(database));
+      syncManualChoice(database, list.length);
+      const ordered = [...list].reverse();
+      for (const s of ordered) {
+        const option = document.createElement('option');
+        option.value = s.session_id;
+        option.textContent = `${new Date(s.started_at_utc).toLocaleString()} · ${s.event_count} 事件 · ${s.session_id}`;
+        $('session').append(option);
+      }
+      $('session').value = ordered[0]?.session_id || '';
+      $('session').disabled = !ordered.length;
+      $('diagnose').disabled = !ordered.length;
+      if (options.discoveredCount > 0) {
+        $('db-status').textContent = ordered.length
+          ? `已发现 ${options.discoveredCount} 个证据库 · 当前含 ${ordered.length} 个会话`
+          : `已发现 ${options.discoveredCount} 个证据库 · 当前库尚无会话`;
+      } else {
+        $('db-status').textContent = ordered.length ? `已读取 ${ordered.length} 个会话` : '数据库尚无会话';
+      }
+    } catch(error) {
+      if (token === dbGeneration) $('db-status').textContent = `读取失败：${String(error)}`;
+    }
+  }
+  async function discoverDatabases({force = false, extraDir = ''} = {}) {
+    if (!force && (dbDiscoveredOnce || loadedDatabase || dbDiscoverBusy)) return;
+    if (!invoke) { $('db-status').textContent = '请使用桌面程序'; return; }
+    // 递增代际号，确保手动读取或重新扫描时丢弃过期发现结果。 / Supersede in-flight discovery on rescan or manual load.
+    const token = ++dbGeneration;
+    const previous = loadedDatabase;
+    dbDiscoverBusy = true;
+    if ($('db-discover')) $('db-discover').disabled = true;
+    $('db-status').textContent = '正在自动发现本机证据库…';
+    const extraDirs = [...new Set([extraDir.trim(), ...readSavedDirs()].filter(Boolean))];
+    try {
+      const report = await invoke('discover_databases', {extraDirs});
+      if (token !== dbGeneration) return;
+      dbDiscoveredOnce = true;
+      discoveredDatabases = Array.isArray(report?.databases) ? report.databases : [];
+      const scannedCount = Array.isArray(report?.scanned_dirs) ? report.scanned_dirs.length : 0;
+      const inExtraDir = extraDir ? discoveredDatabases.find(db => isInsideDir(db.path, extraDir)) : null;
+      if (extraDir && inExtraDir) rememberDir(extraDir);
+      const chosen = inExtraDir?.path || (previous && discoveredDatabases.some(db => db.path === previous) ? previous : discoveredDatabases[0]?.path) || '';
+      renderDatabaseChoices(chosen);
+      if (extraDir && !inExtraDir) {
+        if ($('database-manual')) $('database-manual').open = true;
+        $('db-status').textContent = '未在指定目录发现 Wiesler 证据库';
+        return;
+      }
+      if (!chosen) {
+        loadedDatabase = '';
+        $('session').replaceChildren();
+        $('session').disabled = true;
+        $('diagnose').disabled = true;
+        $('report').textContent = '';
+        if ($('database-manual')) $('database-manual').open = true;
+        $('db-status').textContent = `未发现证据库（已扫描 ${scannedCount} 个目录），可手动指定目录或文件`;
+        return;
+      }
+      if ($('database-manual') && !extraDir) $('database-manual').open = false;
+      await loadSessions(chosen, {discoveredCount: discoveredDatabases.length});
+    } catch(error) {
+      if (token === dbGeneration) {
+        if ($('database-manual')) $('database-manual').open = true;
+        $('db-status').textContent = `自动发现失败：${String(error)}`;
+      }
+    } finally {
+      dbDiscoverBusy = false;
+      if ($('db-discover')) $('db-discover').disabled = false;
+    }
+  }
+  if ($('database-choice')) {
+    $('database-choice').onchange = () => {
+      const selectedPath = $('database-choice').value;
+      $('database-choice').title = selectedPath;
+      if (selectedPath) loadSessions(selectedPath, {discoveredCount: discoveredDatabases.length});
+    };
+  }
+  if ($('db-discover')) {
+    $('db-discover').onclick = () => discoverDatabases({force: true});
+  }
+  $('database').oninput = () => { dbGeneration++; loadedDatabase = ''; $('session').replaceChildren(); $('session').disabled = true; $('diagnose').disabled = true; $('report').textContent = ''; $('db-status').textContent = '路径已变更，请重新读取会话。'; };
+  $('database-form').onsubmit = async e => {
+    e.preventDefault();
+    const database = $('database').value.trim();
+    if (!database) return;
+    if (!/\.(sqlite3|sqlite|db)$/i.test(database)) {
+      await discoverDatabases({force: true, extraDir: database});
+      return;
+    }
+    await loadSessions(database);
   };
   $('session').onchange = () => { dbGeneration++; $('report').textContent=''; $('diagnose').disabled=false; };
   $('diagnose').onclick = async () => {
@@ -86,5 +255,5 @@
   // 隐藏时停止，恢复由用户开启，避免把休眠间隔算成丢包。 / Stop hidden monitoring without inventing loss.
   document.addEventListener('visibilitychange',()=>{if(document.hidden && lossRunning)stopLoss('窗口已隐藏，监控停止 · 点击开始重新采样');});
 
-  window.MonitorTools = {appendRequestLog};
+  window.MonitorTools = {appendRequestLog, discoverDatabases};
 })();

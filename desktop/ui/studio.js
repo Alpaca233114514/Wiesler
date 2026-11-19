@@ -348,6 +348,7 @@
     }
     $('privacy-view').hidden=view!=='privacy';$('graph-view').hidden=view!=='graph';$('monitor-view').hidden=view!=='monitor';$('diagnostics').hidden=view!=='diagnostics';$('settings').hidden=view!=='settings';
     renderStatus();if(view==='graph')render();
+    if(view==='diagnostics')window.MonitorTools.discoverDatabases?.();
     if(view==='privacy'&&dnsCapture)pollDns();
   }
   for(const name of ['graph','monitor','diagnostics','privacy','settings'])$(`view-${name}`).onclick=()=>selectView(name);

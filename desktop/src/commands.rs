@@ -143,12 +143,13 @@ fn is_ignored_subdir(name: &str) -> bool {
         || name.eq_ignore_ascii_case("WebView2")
 }
 
+fn push_dir_pair(dirs: &mut Vec<(PathBuf, bool)>, base: PathBuf, explicit: bool) {
+    dirs.push((base.join("data"), explicit));
+    dirs.push((base, explicit));
+}
+
 fn candidate_database_dirs(extra_dirs: &[String]) -> Vec<(PathBuf, bool)> {
     let mut dirs = Vec::new();
-    let mut add_pair = |base: PathBuf, explicit: bool| {
-        dirs.push((base.join("data"), explicit));
-        dirs.push((base, explicit));
-    };
 
     for raw in extra_dirs {
         let trimmed = raw.trim();
@@ -157,7 +158,7 @@ fn candidate_database_dirs(extra_dirs: &[String]) -> Vec<(PathBuf, bool)> {
         }
         let path = PathBuf::from(trimmed);
         if path.is_dir() {
-            add_pair(path, true);
+            push_dir_pair(&mut dirs, path, true);
         } else if let Some(parent) = path.parent().filter(|p| p.is_dir()) {
             dirs.push((parent.to_path_buf(), true));
         }
@@ -165,23 +166,23 @@ fn candidate_database_dirs(extra_dirs: &[String]) -> Vec<(PathBuf, bool)> {
 
     for key in ["WIESLER_DATA_DIR", "WIESLER_DB_DIR"] {
         if let Some(dir) = std::env::var_os(key).filter(|v| !v.is_empty()) {
-            add_pair(PathBuf::from(dir), true);
+            push_dir_pair(&mut dirs, PathBuf::from(dir), true);
         }
     }
 
     if let Ok(cwd) = std::env::current_dir() {
-        add_pair(cwd, false);
+        push_dir_pair(&mut dirs, cwd, false);
     }
 
     if let Ok(exe) = std::env::current_exe()
         && let Some(exe_dir) = exe.parent()
     {
-        add_pair(exe_dir.to_path_buf(), false);
+        push_dir_pair(&mut dirs, exe_dir.to_path_buf(), false);
         // 支持从 target/release 或 dist/<bundle> 启动时向上定位仓库根目录的 data/。
         // Walk up a few ancestors when launched from build or portable bundle subdirectories.
         for ancestor in exe_dir.ancestors().skip(1).take(4) {
             if ancestor.join("data").is_dir() || ancestor.join("Cargo.toml").is_file() {
-                add_pair(ancestor.to_path_buf(), false);
+                push_dir_pair(&mut dirs, ancestor.to_path_buf(), false);
             }
         }
     }
@@ -192,7 +193,7 @@ fn candidate_database_dirs(extra_dirs: &[String]) -> Vec<(PathBuf, bool)> {
         ("XDG_DATA_HOME", "wiesler"),
     ] {
         if let Some(base) = std::env::var_os(env_key).filter(|v| !v.is_empty()) {
-            add_pair(PathBuf::from(base).join(folder), false);
+            push_dir_pair(&mut dirs, PathBuf::from(base).join(folder), false);
         }
     }
 
@@ -201,11 +202,15 @@ fn candidate_database_dirs(extra_dirs: &[String]) -> Vec<(PathBuf, bool)> {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
     if let Some(home) = home {
-        add_pair(home.join(".wiesler"), false);
-        add_pair(home.join("Wiesler"), false);
-        add_pair(home.join("Documents").join("Wiesler"), false);
-        add_pair(home.join("Documents").join("GitHub").join("Wiesler"), false);
-        add_pair(home.join("Desktop"), false);
+        push_dir_pair(&mut dirs, home.join(".wiesler"), false);
+        push_dir_pair(&mut dirs, home.join("Wiesler"), false);
+        push_dir_pair(&mut dirs, home.join("Documents").join("Wiesler"), false);
+        push_dir_pair(
+            &mut dirs,
+            home.join("Documents").join("GitHub").join("Wiesler"),
+            false,
+        );
+        push_dir_pair(&mut dirs, home.join("Desktop"), false);
         dirs.push((home.join("Downloads"), false));
     }
 
@@ -535,7 +540,11 @@ mod tests {
         let _ignored_store = wiesler::store::Store::open(&ignored_db, 100).unwrap();
 
         let foreign = data_dir.join("foreign.sqlite3");
-        std::fs::write(&foreign, b"SQLite format 3\0not-wiesler-content-padding-000000000000000000000000000000000000").unwrap();
+        std::fs::write(
+            &foreign,
+            b"SQLite format 3\0not-wiesler-content-padding-000000000000000000000000000000000000",
+        )
+        .unwrap();
         std::fs::write(data_dir.join("notes.txt"), b"hello").unwrap();
 
         let report = discover_databases_in(&[
