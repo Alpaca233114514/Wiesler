@@ -304,33 +304,58 @@
             </div>
             <div class="dns-action-group">
               <button id="dns-start" type="button" class="btn-primary">开始本地检查</button>
+              <button id="dns-probe" type="button" class="btn-subtle" disabled>测试解析</button>
               <button id="dns-stop" type="button" class="btn-subtle" disabled>停止</button>
             </div>
           </div>
-          <div class="privacy-summary dns-verdict-box">
-            <h2 id="dns-verdict">等待本地 DNS 证据</h2>
-            <p id="dns-detail">点击开始后正常使用应用，自动发现网卡并持续记录 DNS 查询与出口报文。</p>
-            <p id="dns-counts" class="dns-counts-bar"></p>
+          <div id="dns-verdict-box" class="privacy-summary dns-verdict-box" data-status="idle">
+            <div class="dns-verdict-head">
+              <span id="dns-badge" class="dns-status-badge">待开始</span>
+              <h2 id="dns-verdict">等待本地 DNS 检查</h2>
+            </div>
+            <p id="dns-detail">点击「开始本地检查」后正常使用应用，自动识别网卡并归类 DNS 出口路径。</p>
+            <div id="dns-metrics" class="dns-metrics">
+              <div class="dns-metric-item" data-tone="neutral">
+                <span class="dns-metric-label">海外泄漏</span>
+                <strong id="dns-metric-physical">—</strong>
+              </div>
+              <div class="dns-metric-item" data-tone="neutral">
+                <span class="dns-metric-label">隧道 / 代理</span>
+                <strong id="dns-metric-tunnel">—</strong>
+              </div>
+              <div class="dns-metric-item" data-tone="neutral">
+                <span class="dns-metric-label">国内直连</span>
+                <strong id="dns-metric-domestic">—</strong>
+              </div>
+              <div class="dns-metric-item" data-tone="neutral">
+                <span class="dns-metric-label">加密 DNS</span>
+                <strong id="dns-metric-encrypted">—</strong>
+              </div>
+            </div>
+            <div id="dns-resolvers" class="dns-resolvers" hidden></div>
           </div>
           <div id="dns-errors" class="dns-errors" role="status"></div>
           <div class="dns-controls dns-filter-row" role="group" aria-label="DNS 记录筛选">
             <div class="dns-choice">
-              <button id="dns-filter-all" type="button" aria-pressed="true">全部记录</button>
-              <button id="dns-filter-physical" type="button" aria-pressed="false">物理出口证据</button>
+              <button id="dns-filter-summary" type="button" aria-pressed="true">全部汇总</button>
+              <button id="dns-filter-overseas" type="button" aria-pressed="false">海外流量</button>
+              <button id="dns-filter-domestic" type="button" aria-pressed="false">国内 / 内网</button>
+              <button id="dns-filter-physical" type="button" aria-pressed="false">海外泄漏</button>
               <button id="dns-filter-encrypted" type="button" aria-pressed="false">加密 DNS</button>
+              <button id="dns-filter-all" type="button" aria-pressed="false">原始明细</button>
             </div>
             <span id="dns-rows-status"></span>
           </div>
           <div class="table-wrap dns-table">
             <table>
               <thead>
-                <tr>
-                  <th>时间 / 来源</th>
-                  <th>查询</th>
-                  <th>阶段 / 结果</th>
+                <tr id="dns-table-head">
+                  <th>域名 / 类型</th>
+                  <th>出口路径</th>
+                  <th>解析器 / 网卡</th>
                   <th>进程</th>
-                  <th>解析器</th>
-                  <th>接口 / 方向</th>
+                  <th>解析结果</th>
+                  <th>次数 / 时间</th>
                 </tr>
               </thead>
               <tbody id="dns-rows">
@@ -339,9 +364,9 @@
             </table>
           </div>
           <details class="privacy-options">
-            <summary>采集覆盖与网卡清单</summary>
+            <summary>采集诊断与网卡清单</summary>
             <div class="details-body">
-              <p id="dns-coverage">结合 Windows DNS 事件与网卡报文核对实际出口。</p>
+              <p id="dns-coverage">尚未开始采集。</p>
               <div id="dns-interfaces" class="interface-list"></div>
             </div>
           </details>
@@ -413,19 +438,29 @@
         <div class="panel-head">
           <div>
             <h3>历史会话诊断</h3>
-            <span class="panel-sub">加载 CLI 录制的 SQLite 证据库</span>
+            <span class="panel-sub">自动发现本机 SQLite 证据库</span>
           </div>
-          <span id="db-status" class="status-inline" role="status">请选择 SQLite 数据库文件</span>
+          <span id="db-status" class="status-inline" role="status">打开此页将自动扫描本机证据库</span>
         </div>
-        <form id="database-form" class="settings">
-          <label for="database">数据库路径</label>
-          <input id="database" placeholder="C:\path\to\wiesler.sqlite3" required>
-          <button type="submit" class="btn-subtle">读取会话</button>
-        </form>
+        <div class="settings">
+          <label for="database-choice">证据库</label>
+          <select id="database-choice" aria-label="发现的 SQLite 证据库" disabled><option value="">正在等待扫描…</option></select>
+          <button id="db-discover" type="button" class="btn-subtle">重新扫描</button>
+        </div>
         <div class="settings">
           <label for="session">诊断会话</label>
-          <select id="session" disabled><option value="">请先读取数据库</option></select>
+          <select id="session" disabled><option value="">请先选择证据库</option></select>
           <button id="diagnose" type="button" class="btn-primary" disabled>生成诊断</button>
+        </div>
+        <div class="diagnostics-manual">
+          <details id="database-manual" class="controller-advanced">
+            <summary>手动指定文件或目录</summary>
+            <form id="database-form" class="manual-db-form">
+              <label for="database">路径</label>
+              <input id="database" placeholder="C:\path\to\data 或 wiesler.sqlite3" required>
+              <button type="submit" class="btn-subtle">读取会话</button>
+            </form>
+          </details>
         </div>
         <pre id="report" class="report"></pre>
       </section>

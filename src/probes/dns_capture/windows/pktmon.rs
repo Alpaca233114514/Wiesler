@@ -233,8 +233,8 @@ impl Session {
             context: (&mut *s.context as *mut Sink).cast(),
             event: Some(stream_event),
             data: Some(packet),
-            multiplier: 10,
-            truncation: 8192,
+            multiplier: 20,
+            truncation: 9000,
         };
         check("PacketMonitorCreateRealtimeStream", unsafe {
             (s.api.create_stream)(monitor, &cfg, &mut s.stream)
@@ -247,12 +247,12 @@ impl Session {
         })?;
         Ok(s)
     }
-    fn sources(&self, hidden: bool) -> Result<Vec<Source>, NativeError> {
+    fn sources(&self, kind: u32, hidden: bool) -> Result<Vec<Source>, NativeError> {
         let mut needed = 0;
         let first = unsafe {
             (self.api.enum_sources)(
                 self.monitor,
-                1,
+                kind,
                 u8::from(hidden),
                 0,
                 &mut needed,
@@ -270,7 +270,7 @@ impl Session {
         check("PacketMonitorEnumDataSources", unsafe {
             (self.api.enum_sources)(
                 self.monitor,
-                1,
+                kind,
                 u8::from(hidden),
                 capacity,
                 &mut needed,
@@ -299,7 +299,7 @@ impl Session {
         Ok(sources)
     }
     pub fn refresh(&mut self) -> Result<(), NativeError> {
-        for source in self.sources(false)? {
+        for source in self.sources(1, false)? {
             if self.added.contains(&source.id) {
                 continue;
             }
@@ -309,8 +309,16 @@ impl Session {
             self.added.insert(source.id);
         }
         let mut interfaces = HashMap::new();
+        let mut parents = HashMap::new();
         let adapters = adapter_rows();
-        for source in self.sources(true)? {
+        let all_sources = self.sources(0, true).or_else(|_| self.sources(1, true))?;
+        for source in &all_sources {
+            if source.parent != 0 && source.parent != source.id {
+                parents.insert(source.id, source.parent);
+                if source.secondary != 0 && source.secondary != source.parent {
+                    parents.entry(source.secondary).or_insert(source.parent);
+                }
+            }
             let mut info = Interface {
                 component_id: source.id,
                 name: utf16(&source.description),
@@ -319,7 +327,7 @@ impl Session {
             if info.name.is_empty() {
                 info.name = utf16(&source.name);
             }
-            if source.present == 1 {
+            if source.present & 1 != 0 {
                 let guid =
                     unsafe { std::ptr::read_unaligned(source.detail.as_ptr().cast::<GUID>()) };
                 let mut row = MIB_IF_ROW2::default();
@@ -328,15 +336,15 @@ impl Session {
                 {
                     info.name = utf16(&row.Alias);
                     info.index = Some(row.InterfaceIndex);
-                    info.hardware = Some(row.InterfaceAndOperStatusFlags._bitfield & 1 != 0);
+                    info.hardware = Some(is_hardware_adapter(&row));
                 }
             }
             if info.index.is_none() {
-                // 部分物理组件只提供 MAC/描述；仅接受唯一的系统网卡匹配。 / Some physical sources lack GUIDs; require a unique OS adapter match.
-                if let Some(row) = matching_adapter(&source, &adapters) {
+                // 部分物理组件只提供 MAC/描述；匹配系统网卡时避免歧义。 / Match OS adapter by MAC/description when GUID is absent.
+                if let Some(row) = matching_adapter(source, &adapters) {
                     info.name = utf16(&row.Alias);
                     info.index = Some(row.InterfaceIndex);
-                    info.hardware = Some(row.InterfaceAndOperStatusFlags._bitfield & 1 != 0);
+                    info.hardware = Some(is_hardware_adapter(row));
                 }
             }
             interfaces.insert(source.id, info.clone());
@@ -345,11 +353,43 @@ impl Session {
                 interfaces.entry(source.secondary).or_insert(info);
             }
         }
+        // 子组件沿 ParentId 链继承父网卡的物理/虚拟属性。 / Inherit adapter metadata along ParentId chain.
+        let ids: Vec<u32> = interfaces.keys().copied().collect();
+        for id in ids {
+            if interfaces.get(&id).and_then(|i| i.hardware).is_some() {
+                continue;
+            }
+            let mut cursor = id;
+            let mut resolved = None;
+            for _ in 0..8 {
+                let Some(&parent_id) = parents.get(&cursor) else {
+                    break;
+                };
+                if let Some(parent) = interfaces.get(&parent_id)
+                    && parent.hardware.is_some()
+                {
+                    resolved = Some(parent.clone());
+                    break;
+                }
+                cursor = parent_id;
+            }
+            if let Some(mut parent) = resolved {
+                parent.component_id = id;
+                interfaces.insert(id, parent);
+            }
+        }
         self.interfaces = interfaces;
         Ok(())
     }
 }
-fn adapter_rows() -> Vec<MIB_IF_ROW2> {
+pub(super) fn is_hardware_adapter(row: &MIB_IF_ROW2) -> bool {
+    // 回环 (24) 与隧道 (131) 始终按非物理接口处理。 / Loopback and tunnel interfaces are never physical NICs.
+    if matches!(row.Type, 24 | 131) {
+        return false;
+    }
+    row.InterfaceAndOperStatusFlags._bitfield & 1 != 0
+}
+pub(super) fn adapter_rows() -> Vec<MIB_IF_ROW2> {
     let mut table = null_mut();
     if unsafe { GetIfTable2(&mut table) } != 0 || table.is_null() {
         return vec![];
@@ -362,27 +402,44 @@ fn adapter_rows() -> Vec<MIB_IF_ROW2> {
     }
     rows
 }
+fn unique_or_single_up(candidates: Vec<&MIB_IF_ROW2>) -> Option<&MIB_IF_ROW2> {
+    if candidates.len() == 1 {
+        return Some(candidates[0]);
+    }
+    let up: Vec<_> = candidates
+        .into_iter()
+        .filter(|row| row.OperStatus == 1)
+        .collect();
+    (up.len() == 1).then(|| up[0])
+}
 fn matching_adapter<'a>(source: &Source, rows: &'a [MIB_IF_ROW2]) -> Option<&'a MIB_IF_ROW2> {
     let description = utf16(&source.description);
     let mac = source.detail[0].to_ne_bytes();
-    let mut matches = rows.iter().filter(|row| {
-        if source.present & 8 != 0 {
-            row.PhysicalAddressLength == 6
-                && (row.PhysicalAddress[..6] == mac[..6]
-                    || row.PermanentPhysicalAddress[..6] == mac[..6])
-        } else {
-            !description.is_empty() && utf16(&row.Description) == description
+    let has_mac = source.present & 8 != 0;
+    let mac_matches = |row: &&MIB_IF_ROW2| {
+        row.PhysicalAddressLength == 6
+            && (row.PhysicalAddress[..6] == mac[..6]
+                || row.PermanentPhysicalAddress[..6] == mac[..6])
+    };
+    let desc_matches =
+        |row: &&MIB_IF_ROW2| !description.is_empty() && utf16(&row.Description) == description;
+    if has_mac && !description.is_empty() {
+        let both: Vec<_> = rows
+            .iter()
+            .filter(|row| mac_matches(row) && desc_matches(row))
+            .collect();
+        if let Some(row) = unique_or_single_up(both) {
+            return Some(row);
         }
-    });
-    if let Some(first) = matches.next() {
-        return matches.next().is_none().then_some(first);
     }
-    // 某些驱动的联合字段不是可用 MAC；完整描述仍须唯一匹配。 / Fall back to a unique complete adapter description.
-    let mut descriptions = rows
-        .iter()
-        .filter(|row| !description.is_empty() && utf16(&row.Description) == description);
-    let first = descriptions.next()?;
-    descriptions.next().is_none().then_some(first)
+    if has_mac {
+        let by_mac: Vec<_> = rows.iter().filter(mac_matches).collect();
+        if let Some(row) = unique_or_single_up(by_mac) {
+            return Some(row);
+        }
+    }
+    let by_desc: Vec<_> = rows.iter().filter(desc_matches).collect();
+    unique_or_single_up(by_desc)
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -419,10 +476,13 @@ unsafe extern "system" fn packet(context: Handle, descriptor: *const Descriptor)
         d.missed_write as u64 + d.missed_read.wrapping_sub(previous_reads) as u64,
         Ordering::Relaxed,
     );
+    if d.packet_length > 9000 {
+        sink.oversized_warnings.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
     if d.data.is_null()
         || d.metadata_offset as usize + 40 > d.size as usize
         || d.packet_offset as usize + d.packet_length as usize > d.size as usize
-        || d.packet_length > 9000
     {
         sink.packet_loss.fetch_add(1, Ordering::Relaxed);
         return;
@@ -441,6 +501,7 @@ unsafe extern "system" fn packet(context: Handle, descriptor: *const Descriptor)
     .to_vec();
     sink.send(Input::Packet {
         at: filetime(m.timestamp),
+        group: m.group,
         component: m.component as u32,
         kind: m.kind,
         direction: m.direction,
@@ -509,10 +570,24 @@ unsafe extern "system" fn stream_event(context: Handle, info: *const c_void, kin
             }
         }
         3 => {
-            // 过程警告不会停止流，但丢失的报文仍计入覆盖缺口。 / A warning does not stop the stream; retain the coverage gap.
+            // 超长非 DNS 大包（ERROR_INSUFFICIENT_BUFFER=122）只记为忽略计数，不破坏采集状态。 / Ignore oversized buffer warnings (122); report real errors.
             let state = unsafe { &*info.cast::<ProcessInfo>() };
+            if state.reason == 122 || state.reason == 0x8007007A {
+                sink.oversized_warnings.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
             sink.packet_loss.fetch_add(1, Ordering::Relaxed);
-            sink.send(Input::Warning(format!("Packet Monitor {}：系统代码 {} (0x{:08X})，报文长度 {} 字节；此报文未采集，继续观察", if state.warning != 0 { "警告" } else { "处理错误" }, state.reason, state.reason, state.packet_length)));
+            sink.send(Input::Warning(format!(
+                "Packet Monitor {}：错误码 {} (0x{:08X})，报文 {} 字节",
+                if state.warning != 0 {
+                    "警告"
+                } else {
+                    "处理错误"
+                },
+                state.reason,
+                state.reason,
+                state.packet_length
+            )));
         }
         _ => {}
     }
@@ -571,6 +646,7 @@ mod tests {
             packet_loss: Arc::new(AtomicU64::new(0)),
             packet_read_count: Arc::new(AtomicU64::new(0)),
             event_loss: Arc::new(AtomicU64::new(0)),
+            oversized_warnings: Arc::new(AtomicU64::new(0)),
         };
         let info = ProcessInfo {
             warning: 1,
@@ -584,9 +660,24 @@ mod tests {
                 3,
             );
         }
+        assert_eq!(sink.oversized_warnings.load(Ordering::Relaxed), 1);
+        assert_eq!(sink.packet_loss.load(Ordering::Relaxed), 0);
+        assert!(rx.try_recv().is_err());
+        let non_oversize = ProcessInfo {
+            warning: 0,
+            reason: 87,
+            packet_length: 128,
+        };
+        unsafe {
+            stream_event(
+                (&mut sink as *mut Sink).cast(),
+                (&non_oversize as *const ProcessInfo).cast(),
+                3,
+            );
+        }
         assert_eq!(sink.packet_loss.load(Ordering::Relaxed), 1);
         assert!(
-            matches!(rx.try_recv().unwrap(), Input::Warning(message) if message.contains("122") && message.contains("9100"))
+            matches!(rx.try_recv().unwrap(), Input::Warning(message) if message.contains("87") && message.contains("128"))
         );
         let stop = StopInfo {
             fatal: 0,

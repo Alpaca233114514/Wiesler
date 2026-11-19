@@ -440,26 +440,58 @@ test('DNS condition changes reassess completed evidence and clear stale verdict 
   let finish;
   const ui=setup(async(command,args)=>{
     if(command==='dns_capture_start')return dnsView({running:false});
-    return new Promise(resolve=>{finish=()=>resolve({...dnsView({running:false}),policy:args.policy,assessment:{status:'observed',title:'观察到明文 DNS 从物理网卡发出',detail:'仅观察模式',physicalQueries:1,encryptedEvents:0,evidenceIds:[1]}});});
+    return new Promise(resolve=>{finish=()=>resolve({...dnsView({running:false}),policy:args.policy,assessment:{status:'observed',title:'物理网卡存在明文 DNS 出站',detail:'物理网卡发出 1 条明文 DNS 查询。',physicalQueries:1,encryptedEvents:0,evidenceIds:[1]}});});
   });
   await ui.get('dns-start').onclick();
   const pending=ui.get('dns-policy-observe').onclick();
   assert.match(ui.get('dns-verdict').textContent,/重新判断/);
   assert.equal(ui.get('dns-verdict').className,'');
-  assert.match(ui.get('dns-detail').textContent,/当前条件：仅观察分流/);
-  finish();await pending;
-  assert.match(ui.get('dns-verdict').textContent,/观察到明文/);
   assert.equal(ui.get('dns-policy-observe').attrs['aria-pressed'],'true');
+  finish();await pending;
+  assert.match(ui.get('dns-verdict').textContent,/物理网卡存在明文/);
+  assert.equal(ui.get('dns-verdict-box').attrs['data-status'],'observed');
   ui.get('privacy-report').onclick();
   assert.equal(JSON.parse(ui.get('privacy-report-result').value).dnsCapture.policy,'observe');
 });
 
-test('changing DNS condition with no evidence explains why verdict cannot improve',async()=>{
-  const ui=setup(async(command,args)=>({...dnsView({running:false,observations:[],leakEvidence:[]}),policy:args.policy,assessment:{status:'no_sample',title:'尚无网卡 DNS 查询样本',detail:'尚无样本',physicalQueries:0,encryptedEvents:0,evidenceIds:[]}}));
-  await ui.get('dns-start').onclick();await ui.get('dns-policy-observe').onclick();
-  assert.match(ui.get('dns-verdict').textContent,/尚无/);
-  assert.match(ui.get('dns-detail').textContent,/仅观察分流/);
-  assert.match(ui.get('dns-detail').textContent,/切换条件不会补足/);
+test('DNS summary renders overseas/domestic split, metrics, resolver chips and filters without defensive disclaimers',async()=>{
+  const view={
+    policy:'proxy_required',
+    report:{startedAt:1000,endsAt:31000,stoppedAt:5000,running:false,packetState:'active',eventState:'active',errors:[],interfaces:[{name:'Meta',hardware:false,index:3,componentId:1}],coverage:{windowsEvents:4,dnsMessages:3,lostPackets:0,lostEvents:0,queueDrops:0,parseFailures:0,fragments:0,unsupportedPackets:0,incompleteTcp:0,unknownInterfaces:0,retainedRowsDropped:0,tunnelQueries:2,loopbackQueries:0,domesticDirectQueries:1,duplicatePackets:3},observations:[],leakEvidence:[]},
+    assessment:{status:'not_observed',title:'未发现海外 DNS 泄漏',detail:'海外域名无物理网卡明文直出；本轮捕获 2 条隧道/代理查询、1 条国内直连、2 条加密 DNS。',physicalQueries:0,encryptedEvents:2,tunnelQueries:2,domesticQueries:1,uniqueDomains:2,evidenceIds:[],resolvers:[{resolver:'198.18.0.2',interfaceName:'Meta',routeKind:'tunnel',queries:2,domains:['api.github.com']},{resolver:'223.5.5.5',interfaceName:'WLAN',routeKind:'encrypted',queries:2,domains:[]}],queries:[{domain:'api.github.com',region:'overseas',queryTypes:[1,28],routeKind:'tunnel',resolver:'198.18.0.2',interfaceName:'Meta',process:'chrome.exe',pid:4321,answers:['198.18.0.15'],transport:'UDP',count:2,lastSeen:2000,isLeak:false},{domain:'www.baidu.com',region:'domestic',queryTypes:[1],routeKind:'domestic_direct',resolver:'223.5.5.5',interfaceName:'WLAN',process:'chrome.exe',pid:4321,answers:['110.242.68.66'],transport:'UDP',count:1,lastSeen:2001,isLeak:false}]}
+  };
+  const ui=setup(async(command,args)=>({...view,policy:args.policy}));
+  await ui.get('dns-start').onclick();
+  assert.equal(ui.get('dns-verdict').textContent,'未发现海外 DNS 泄漏');
+  assert.equal(ui.get('dns-badge').textContent,'正常');
+  assert.equal(ui.get('dns-verdict-box').attrs['data-status'],'not_observed');
+  assert.equal(ui.get('dns-metric-physical').textContent,'0');
+  assert.equal(ui.get('dns-metric-tunnel').textContent,'2');
+  assert.equal(ui.get('dns-metric-domestic').textContent,'1');
+  assert.equal(ui.get('dns-metric-encrypted').textContent,'2');
+  assert.match(ui.content(ui.get('dns-resolvers')),/198\.18\.0\.2.*Meta.*2 次/);
+  assert.match(ui.content(ui.get('dns-rows')),/海外.*api\.github\.com.*隧道代理.*chrome\.exe.*198\.18\.0\.15/);
+  assert.doesNotMatch(ui.get('dns-detail').textContent,/切换条件不会补足|不能据此认证无泄漏/);
+  ui.get('dns-filter-overseas').onclick();
+  assert.match(ui.content(ui.get('dns-rows')),/api\.github\.com/);
+  assert.doesNotMatch(ui.content(ui.get('dns-rows')),/baidu\.com/);
+  ui.get('dns-filter-domestic').onclick();
+  assert.match(ui.content(ui.get('dns-rows')),/baidu\.com/);
+  assert.doesNotMatch(ui.content(ui.get('dns-rows')),/api\.github\.com/);
+});
+
+test('inspector height stays locked to graph panel and preserves scroll across live refreshes',async()=>{
+  const css=fs.readFileSync('desktop/ui/studio.css','utf8');
+  assert.match(css,/\.workbench\s*\{[^}]*--workbench-row-height:\s*\d+px;[^}]*align-items:\s*start;/s);
+  assert.match(css,/\.graph-panel\s*\{[^}]*height:\s*var\(--workbench-row-height\);/s);
+  assert.match(css,/\.inspector\s*\{[^}]*height:\s*var\(--workbench-row-height\);[^}]*overflow:\s*hidden;/s);
+  assert.match(css,/#inspect-content\s*\{[^}]*flex:\s*1 1 0;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/s);
+  const ui=await setupWithSamples();
+  ui.get('inspect-content').scrollTop=140;
+  await ui.tick();
+  assert.equal(ui.get('inspect-content').scrollTop,140);
+  ui.get('flow-rows').children[1].children[0].children[0].onclick();
+  assert.equal(ui.get('inspect-content').scrollTop,0);
 });
 
 async function setupWithSamples(){

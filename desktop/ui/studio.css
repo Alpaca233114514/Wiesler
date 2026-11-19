@@ -490,10 +490,11 @@ main {
    4. Workbench: Connection Graph, Session Inspector & Active Sessions
    ========================================================================== */
 .workbench {
+  --workbench-row-height: 540px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) clamp(280px, 31%, 350px);
   gap: 12px;
-  align-items: stretch;
+  align-items: start;
 }
 
 .graph-panel,
@@ -507,13 +508,17 @@ main {
   box-shadow: var(--card-highlight);
 }
 
+/* 锁定图谱与检查器同高，避免右侧内容变化带动左侧画布伸缩。 / Lock graph and inspector height so inspector content never resizes the graph. */
 .graph-panel {
+  min-width: 0;
+  height: var(--workbench-row-height);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
 .graph-toolbar {
+  flex: 0 0 auto;
   height: 44px;
   padding: 0 14px;
   display: flex;
@@ -582,10 +587,8 @@ main {
 
 #graph {
   position: relative;
-  flex: 1;
-  height: 392px;
-  min-height: 392px;
-  max-height: 480px;
+  flex: 1 1 0;
+  min-height: 0;
   overflow: hidden;
   -webkit-user-select: none;
   user-select: none;
@@ -595,9 +598,8 @@ main {
 }
 
 @media (min-width: 1500px) {
-  #graph {
-    height: 430px;
-    min-height: 430px;
+  .workbench {
+    --workbench-row-height: 560px;
   }
 }
 
@@ -766,6 +768,7 @@ main {
 .receive-key { color: var(--mint); }
 
 .timeline {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -798,11 +801,27 @@ main {
    5. Session Inspector
    ========================================================================== */
 .inspector {
+  display: flex;
+  flex-direction: column;
   padding: 14px 16px;
   min-width: 0;
-  height: auto;
-  max-height: none;
-  overflow: visible;
+  height: var(--workbench-row-height);
+  overflow: hidden;
+}
+
+.inspector-heading,
+.inspector-hero,
+.inspector-tabs {
+  flex: 0 0 auto;
+}
+
+#inspect-content {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin-right: -8px;
+  padding-right: 8px;
 }
 
 .inspector-heading {
@@ -1598,16 +1617,85 @@ tr.selected td { background: var(--selected); }
 
 .dns-verdict-box {
   margin: 0 16px 12px;
-  padding: 12px 14px;
+  padding: 14px 16px;
   background: var(--surface-inset);
   border: 1px solid var(--line);
-  border-left: 2.5px solid var(--line-strong);
+  border-left: 3px solid var(--line-strong);
   border-radius: var(--radius-md);
 }
 
-.dns-verdict-box:has(.dns-leak) {
+.dns-verdict-box[data-status="not_observed"] {
+  border-left-color: var(--mint);
+  background: linear-gradient(90deg, var(--mint-soft), transparent 45%), var(--surface-inset);
+}
+
+.dns-verdict-box[data-status="leak"] {
+  border-left-color: var(--danger);
+  background: linear-gradient(90deg, var(--danger-soft), transparent 55%), var(--surface-inset);
+}
+
+.dns-verdict-box[data-status="observed"],
+.dns-verdict-box[data-status="incomplete"],
+.dns-verdict-box[data-status="unavailable"] {
   border-left-color: var(--amber);
+  background: linear-gradient(90deg, var(--amber-soft), transparent 45%), var(--surface-inset);
+}
+
+.dns-verdict-box[data-status="awaiting_authorization"],
+.dns-verdict-box[data-status="starting"] {
+  border-left-color: var(--blue);
+}
+
+.dns-verdict-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 6px;
+}
+
+.dns-verdict-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.dns-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  border: 1px solid var(--line);
+}
+
+.dns-verdict-box[data-status="not_observed"] .dns-status-badge {
+  background: var(--mint-soft);
+  color: var(--mint);
+  border-color: transparent;
+}
+
+.dns-verdict-box[data-status="leak"] .dns-status-badge {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: transparent;
+}
+
+.dns-verdict-box[data-status="observed"] .dns-status-badge,
+.dns-verdict-box[data-status="incomplete"] .dns-status-badge,
+.dns-verdict-box[data-status="unavailable"] .dns-status-badge {
   background: var(--amber-soft);
+  color: var(--amber);
+  border-color: transparent;
+}
+
+.dns-verdict-box[data-status="awaiting_authorization"] .dns-status-badge,
+.dns-verdict-box[data-status="starting"] .dns-status-badge {
+  background: var(--blue-soft);
+  color: var(--blue);
+  border-color: transparent;
 }
 
 .privacy-summary h2 {
@@ -1619,17 +1707,145 @@ tr.selected td { background: var(--selected); }
 .privacy-summary p {
   font-size: 12.5px;
   line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.dns-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.dns-metric-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.dns-metric-label {
+  font-size: 11px;
   color: var(--muted);
 }
 
-.dns-counts-bar {
-  margin-top: 6px;
+.dns-metric-item strong {
   font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text) !important;
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--text);
 }
 
-.dns-counts-bar:empty { display: none; }
+.dns-metric-item[data-tone="ok"] strong { color: var(--mint); }
+.dns-metric-item[data-tone="info"] strong { color: var(--blue); }
+.dns-metric-item[data-tone="warn"] strong { color: var(--amber); }
+.dns-metric-item[data-tone="danger"] { border-color: var(--danger-soft); }
+.dns-metric-item[data-tone="danger"] strong { color: var(--danger); }
+
+.dns-resolvers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.dns-resolver-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px 4px 5px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.dns-resolver-chip.route-physical {
+  border-color: var(--danger-soft);
+}
+
+.dns-resolver-ip {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dns-resolver-iface,
+.dns-resolver-count {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.dns-resolver-count {
+  font-family: var(--font-mono);
+}
+
+.dns-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+}
+
+.dns-badge.route-physical { background: var(--danger-soft); color: var(--danger); }
+.dns-badge.route-domestic_direct { background: var(--surface-raised); color: var(--text-secondary); border: 1px solid var(--line); }
+.dns-badge.route-tunnel,
+.dns-badge.route-loopback { background: var(--mint-soft); color: var(--mint); }
+.dns-badge.route-encrypted { background: var(--blue-soft); color: var(--blue); }
+.dns-badge.route-cache,
+.dns-badge.route-system { background: var(--surface-raised); color: var(--muted); }
+.dns-badge.route-unknown { background: var(--amber-soft); color: var(--amber); }
+
+.dns-domain-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.dns-region-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  height: 17px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.dns-region-tag.region-overseas { background: var(--blue-soft); color: var(--blue); }
+.dns-region-tag.region-domestic { background: var(--surface-raised); color: var(--text-secondary); }
+.dns-region-tag.region-local { background: var(--surface-raised); color: var(--muted); }
+.dns-region-tag.region-encrypted { background: var(--blue-soft); color: var(--blue); }
+
+.dns-domain-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dns-sub-meta {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.dns-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
 
 .dns-errors {
   padding: 0 16px;
@@ -1645,9 +1861,12 @@ tr.selected td { background: var(--selected); }
   border-radius: var(--radius-sm);
 }
 
-.dns-leak,
+.dns-leak {
+  color: var(--danger);
+}
+
 .dns-evidence td {
-  color: var(--amber);
+  background: var(--danger-soft);
 }
 
 #dns-rows-status {
@@ -1860,6 +2079,34 @@ details[open] > summary::after {
 
 .report:empty { display: none; }
 
+.diagnostics-manual {
+  padding: 0 16px 14px;
+}
+
+.diagnostics-manual .controller-advanced {
+  margin-top: 4px;
+}
+
+.manual-db-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.manual-db-form label {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.manual-db-form input {
+  flex: 1;
+  min-width: 200px;
+  background: var(--surface);
+}
+
 .settings-content { padding: 14px 16px 8px; }
 
 .controller-actions {
@@ -1906,8 +2153,24 @@ details[open] > summary::after {
    8. Responsive Breakpoints
    ========================================================================== */
 @container (max-width: 780px) {
+  .dns-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .workbench {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .graph-panel {
+    height: 480px;
+  }
+  .inspector {
+    height: auto;
+    overflow: visible;
+  }
+  #inspect-content {
+    flex: none;
+    overflow: visible;
+    margin-right: 0;
+    padding-right: 0;
   }
   .dns-table table,
   .dns-table tbody {

@@ -70,12 +70,12 @@ test('environment interpretation preserves measurements without inventing IP mis
 });
 
 
-test('measured DNS results distinguish configured paths and explicit test queries from leakage',()=>{
+test('measured DNS results report configured paths and active test outcomes clearly',()=>{
   const cards=P.activeResults({startedAt:1000,dns:{value:{resolvers:[
     {server:'10.0.0.1',configuredInterface:'WLAN',routeInterface:'WLAN',hardware:true},
     {server:'198.18.0.2',configuredInterface:'Meta',routeInterface:'Meta',hardware:false}
   ],queries:[{server:'10.0.0.1',error:'timeout'}]}},system:{value:{ip:'203.0.113.1'}},proxy:{value:{ip:'203.0.113.1'}}});
   assert.equal(cards[0].state,'attention');assert.match(cards[0].reason,/timeout/);
-  assert.match(cards.find(c=>c.name==='DNS 配置并存').reason,/不能证明其他应用/);
+  assert.match(cards.find(c=>c.name==='DNS 配置并存').reason,/物理网卡：10\.0\.0\.1；虚拟网卡：198\.18\.0\.2/);
   assert.match(cards.find(c=>c.name==='公网出口对比').result,/相同/);
 });

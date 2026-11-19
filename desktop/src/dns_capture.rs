@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
-use wiesler::probes::dns_capture::{Assessment, Capture, Policy, Report, assess};
+use wiesler::probes::dns_capture::{
+    Assessment, Capture, Policy, Report, assess, trigger_local_probe,
+};
 
 #[derive(Default)]
 pub struct State(pub Arc<Mutex<Option<Capture>>>);
@@ -49,6 +51,10 @@ pub fn dns_capture_snapshot(
 ) -> Result<Option<View>, String> {
     let capture = state.0.lock().map_err(|_| "DNS 采集状态不可用")?;
     Ok(capture.as_ref().map(|c| view(c.snapshot(), policy)))
+}
+#[tauri::command]
+pub fn dns_capture_probe() -> String {
+    trigger_local_probe()
 }
 #[tauri::command]
 pub async fn dns_capture_stop(

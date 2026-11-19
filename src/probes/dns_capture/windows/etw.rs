@@ -222,8 +222,26 @@ fn interface(index: u32) -> Option<Interface> {
         component_id: 0,
         name: utf16(&row.Alias),
         index: Some(index),
-        hardware: Some(row.InterfaceAndOperStatusFlags._bitfield & 1 != 0),
+        hardware: Some(super::pktmon::is_hardware_adapter(&row)),
     })
+}
+fn interface_by_name(name: String) -> Interface {
+    for row in super::pktmon::adapter_rows() {
+        let alias = utf16(&row.Alias);
+        let desc = utf16(&row.Description);
+        if alias.eq_ignore_ascii_case(&name) || desc.eq_ignore_ascii_case(&name) {
+            return Interface {
+                component_id: 0,
+                name: if alias.is_empty() { name } else { alias },
+                index: Some(row.InterfaceIndex),
+                hardware: Some(super::pktmon::is_hardware_adapter(&row)),
+            };
+        }
+    }
+    Interface {
+        name,
+        ..Default::default()
+    }
 }
 unsafe extern "system" fn event(record: *mut EVENT_RECORD) {
     // Windows 拥有回调内存；不跨回调保存原始指针。 / Copy fields before the callback returns.
@@ -241,17 +259,15 @@ unsafe extern "system" fn event(record: *mut EVENT_RECORD) {
         3008 => "completed",
         3010 => "send",
         3011 => "receive",
-        3016 => "network_query",
-        3018 | 3020 => "result",
+        3016 => "cache_lookup",
+        3018 => "cache_result",
+        3020 => "network_result",
         8043 | 8044 => "encrypted_query",
         _ => return,
     };
+    // 跳过无查询名的内部辅助事件，不把整个事件流标为失败。 / Skip internal events with empty query name.
     let domain = string(record, if id >= 8000 { "NameQuery" } else { "QueryName" });
     if domain.is_none() {
-        sink.send(Input::Error {
-            source: "event",
-            message: format!("DNS ETW 事件 {id} 缺少可解读的查询名"),
-        });
         return;
     }
     let client_pid = number(record, "ClientPID").filter(|p| *p != 0);
@@ -278,12 +294,7 @@ unsafe extern "system" fn event(record: *mut EVENT_RECORD) {
     };
     let iface = number(record, "InterfaceIndex")
         .and_then(interface)
-        .or_else(|| {
-            string(record, "InterfaceName").map(|name| Interface {
-                name,
-                ..Default::default()
-            })
-        });
+        .or_else(|| string(record, "InterfaceName").map(interface_by_name));
     sink.send(Input::Dns(Box::new(Observation {
         observed_at: filetime(r.EventHeader.TimeStamp),
         source: "windows-dns".into(),

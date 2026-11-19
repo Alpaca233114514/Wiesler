@@ -72,13 +72,13 @@ fn name(b: &[u8], cursor: &mut usize) -> Option<String> {
 
 pub fn dns(b: &[u8]) -> Option<Message> {
     let flags = u16be(b, 2)?;
-    if b.len() < 12 || flags & 0x7800 != 0 {
+    if b.len() < 12 {
         return None;
     }
     let qd = u16be(b, 4)?;
     let an = u16be(b, 6)?;
     let other = u16be(b, 8)? as usize + u16be(b, 10)? as usize;
-    if qd == 0 || qd > 16 || an as usize + other > 512 {
+    if qd > 16 || an as usize + other > 512 {
         return None;
     }
     let mut p = 12;
@@ -86,11 +86,8 @@ pub fn dns(b: &[u8]) -> Option<Message> {
     for _ in 0..qd {
         let domain = name(b, &mut p)?;
         let kind = u16be(b, p)?;
-        let class = u16be(b, p + 2)?;
+        let _class = u16be(b, p + 2)?;
         p += 4;
-        if class != 1 {
-            return None;
-        }
         questions.push(Question { name: domain, kind });
     }
     let mut answers = Vec::new();
@@ -164,25 +161,28 @@ pub fn transport(b: &[u8], packet_type: u16) -> Result<Option<Transport<'_>>, Pa
                 _ => return Err(Malformed),
             },
         ),
-        // 802.11 data + LLC/SNAP；受保护帧不做解密。 / Decode plain Wi-Fi data frames only.
+        // 802.11 数据帧 + LLC/SNAP；跳过管理/控制/空数据及硬件加密副本。 / Decode plain 802.11 data frames; ignore non-data or hardware-encrypted copies.
         2 => {
             let fc = u16::from_le_bytes(b.get(..2).ok_or(Truncated)?.try_into().unwrap());
-            if fc & 0x000c != 8 || fc & 0x0040 != 0 {
+            let subtype = (fc >> 4) & 0x0f;
+            if fc & 0x000c != 8 || subtype & 4 != 0 {
                 return Ok(None);
             }
             let mut offset = 24 + if fc & 0x0300 == 0x0300 { 6 } else { 0 };
-            if fc & 0x0080 != 0 {
+            if subtype & 8 != 0 {
                 offset += 2;
                 if fc & 0x8000 != 0 {
                     offset += 4;
                 }
             }
-            // 驱动解密后可能保留 Protected 位，以实际 LLC/SNAP 为准。 / Drivers may retain Protected after decryption; inspect LLC/SNAP.
+            // 无明文 LLC/SNAP（如驱动加密帧）跳过，明文视图已由 NDIS Ethernet 层提供。 / Skip encrypted/non-SNAP 802.11 frames; NDIS Ethernet layer delivers plaintext.
             if b.get(offset..offset + 6) != Some(&[0xaa, 0xaa, 3, 0, 0, 0]) {
-                return Err(Unsupported);
+                return Ok(None);
             }
             (offset + 8, u16be(b, offset + 6).ok_or(Truncated)?)
         }
+        // 非 DNS 相关协议帧直接忽略。 / Non-DNS packet types reported by PktMon.
+        4 | 7 | 8 | 9 | 10 => return Ok(None),
         _ => return Err(Unsupported),
     };
     for _ in 0..2 {
@@ -472,7 +472,7 @@ mod tests {
             0x1234
         );
         wifi[24] = 0;
-        assert_eq!(transport(&wifi, 2).unwrap_err(), PacketError::Unsupported);
+        assert!(transport(&wifi, 2).unwrap().is_none());
         wifi[0] = 0x48;
         assert!(transport(&wifi, 2).unwrap().is_none());
         b[6] = 0x20;

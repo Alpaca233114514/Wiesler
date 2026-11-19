@@ -104,18 +104,23 @@
       </div>
     </section>
     <section id="diagnostics" class="panel" hidden>
-      <div class="panel-head"><h3>历史会话诊断</h3><span>读取 CLI 已保存的证据</span></div>
+      <div class="panel-head"><h3>历史会话诊断</h3><span>自动发现本机 SQLite 证据库</span></div>
+      <div class="settings">
+        <label for="database-choice">证据库</label>
+        <select id="database-choice" aria-label="发现的 SQLite 证据库" disabled><option value="">正在等待扫描…</option></select>
+        <button id="db-discover" type="button">重新扫描</button>
+      </div>
       <form id="database-form" class="settings">
-        <label for="database">SQLite 路径</label>
-        <input id="database" placeholder="C:\path\to\wiesler.sqlite3" required>
+        <label for="database">手动路径</label>
+        <input id="database" placeholder="C:\path\to\data 或 wiesler.sqlite3" required>
         <button type="submit">读取会话</button>
       </form>
       <div class="settings">
         <label for="session">会话</label>
-        <select id="session" disabled><option value="">请先读取数据库</option></select>
+        <select id="session" disabled><option value="">请先选择证据库</option></select>
         <button id="diagnose" disabled>生成诊断</button>
       </div>
-      <p id="db-status" class="settings" role="status">选择已有 SQLite 数据库文件</p>
+      <p id="db-status" class="settings" role="status">打开诊断中心自动扫描证据库</p>
       <pre id="report" class="report"></pre>
     </section>
     <footer>WIESLER <span>LOCAL OBSERVATORY</span></footer>

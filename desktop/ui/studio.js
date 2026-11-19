@@ -3,7 +3,7 @@
   const $ = id => document.getElementById(id), M = window.StudioModel;
   const svgNS = 'http://www.w3.org/2000/svg';
   const invoke = window.__TAURI__?.core?.invoke;
-  let frames = [], current = null, selected = null, tab = 'overview';
+  let frames = [], current = null, selected = null, tab = 'overview', lastInspectKey = '';
   let frozen = false, replay = null, timer, generation = 0, liveBusy = false;
   let collecting = false, activeController = '', view = 'graph', rebaseline = false;
   let systemCurrent = null, systemError = null, systemBusy = false, systemTimer, controllerFrame = null;
@@ -66,51 +66,173 @@
   let privacyPolicy = {expectProxy:false,uploadBytesPerSecond:1024*1024}, privacyEnvironment = null;
   const expandedPrivacy = new Set();
   let activePrivacy = null, privacyRunToken = 0, privacyRunBusy = false;
-  let dnsCapture = null, dnsBusy = false, dnsPolling = false, dnsTimer = null, dnsRevision = 0, dnsSeconds = 30, dnsPolicy = 'proxy_required', dnsFilter = 'all', dnsError = '';
-  const dnsPhases = {started:'开始查询',completed:'解析完成',send:'发送查询',receive:'接收响应',network_query:'网络查询',result:'解析结果',query:'查询报文',response:'响应报文',encrypted_query:'系统加密查询',encrypted_candidate:'加密端口线索'};
+  let dnsCapture = null, dnsBusy = false, dnsPolling = false, dnsTimer = null, dnsRevision = 0, dnsSeconds = 30, dnsPolicy = 'proxy_required', dnsFilter = 'summary', dnsError = '', dnsProbedRun = null;
+  const dnsPhases = {started:'开始查询',completed:'解析完成',send:'发送查询',receive:'接收响应',cache_lookup:'缓存查找',cache_result:'缓存结果',network_query:'缓存查找',network_result:'网络结果',result:'解析结果',query:'查询报文',response:'响应报文',encrypted_query:'加密查询',encrypted_candidate:'853 加密'};
+  const dnsTypeNames = {1:'A',2:'NS',5:'CNAME',12:'PTR',15:'MX',16:'TXT',28:'AAAA',65:'HTTPS'};
+  const dnsRouteLabels = {physical:'海外泄漏',domestic_direct:'国内直连',tunnel:'隧道代理',loopback:'本地代理',encrypted:'加密 DNS',cache:'系统缓存',system:'系统解析',unknown:'未知接口'};
+  const dnsRegionLabels = {overseas:'海外',domestic:'国内',local:'内网',encrypted:'加密'};
+  const dnsStatusBadges = {leak:'存在泄漏',not_observed:'正常',observed:'海外直出',incomplete:'采集异常',unavailable:'权限不足',no_sample:'暂无样本',awaiting_authorization:'待授权',cancelled:'已取消',starting:'启动中',idle:'待开始'};
+  const dnsEncryptedTransports = new Set(['DoH','DoT','DoT (853)','DoQ (853)','TLS/853 candidate','QUIC/853 candidate']);
+  function isProxyTunnelIp(ip){return /^198\.1[89]\./.test(ip||'');}
+  function fallbackDnsSummary(r, a){
+    const evidence=new Set(a.evidenceIds||[]);
+    const resolvers=new Map(), queries=new Map(), domains=new Set();
+    for(const o of r.observations||[]){
+      if(o.domain)domains.add(o.domain.toLowerCase().replace(/\.$/,''));
+      const isPktTx=o.source==='packet'&&o.phase==='query'&&o.direction==='tx';
+      const isEnc=o.source==='windows-dns'&&['DoH','DoT'].includes(o.transport);
+      const isEncPkt=o.source==='packet'&&o.phase==='encrypted_candidate'&&o.direction==='tx';
+      if(!isPktTx&&!isEnc&&!isEncPkt)continue;
+      const isLoop=o.resolver==='127.0.0.1'||o.resolver==='::1';
+      const isProxy=isProxyTunnelIp(o.resolver);
+      const routeKind=isEnc||isEncPkt?'encrypted':isLoop?'loopback':isProxy?'tunnel':o.interface?.hardware===true?'physical':o.interface?.hardware===false?'tunnel':'unknown';
+      const ifaceName=isProxy&&o.interface?.hardware===true?'代理 TUN DNS':(o.interface?.name||(isLoop?'Loopback':'未知接口'));
+      const resolver=o.resolver||'未知解析器';
+      const rKey=`${routeKind}|${resolver}|${ifaceName}`;
+      if(!resolvers.has(rKey))resolvers.set(rKey,{resolver,interfaceName:ifaceName,routeKind,queries:0,domains:[]});
+      const re=resolvers.get(rKey);re.queries++;
+      if(o.domain&&re.domains.length<5&&!re.domains.includes(o.domain))re.domains.push(o.domain);
+      const domain=o.domain||'DoT/DoQ 加密连接 (853)';
+      const region=isEncPkt?'encrypted':(/\.cn$/i.test(domain)?'domestic':'overseas');
+      const qKey=`${domain.toLowerCase()}|${routeKind}|${resolver}`;
+      if(!queries.has(qKey))queries.set(qKey,{domain,region,queryTypes:[],routeKind,resolver:o.resolver,interfaceName:ifaceName,process:o.process||null,pid:o.pid||null,answers:[],transport:o.transport,count:0,lastSeen:o.observedAt,isLeak:evidence.has(o.id)});
+      const qe=queries.get(qKey);qe.count++;qe.lastSeen=Math.max(qe.lastSeen,o.observedAt);
+      if(o.queryType&&!qe.queryTypes.includes(o.queryType))qe.queryTypes.push(o.queryType);
+      if(evidence.has(o.id))qe.isLeak=true;
+      for(const ans of o.answers||[])if(!qe.answers.includes(ans)&&qe.answers.length<6)qe.answers.push(ans);
+    }
+    return {resolvers:[...resolvers.values()],queries:[...queries.values()],uniqueDomains:domains.size};
+  }
+  function setMetric(id, value, tone){
+    const el=$(id);if(!el)return;
+    el.textContent=String(value);
+    el.parentElement?.setAttribute('data-tone',tone);
+  }
+  function maybeAutoProbe(r){
+    if(!invoke||!r?.running||r.packetState!=='active'||r.eventState!=='active')return;
+    if(dnsProbedRun===r.startedAt)return;
+    dnsProbedRun=r.startedAt;
+    Promise.resolve(invoke('dns_capture_probe')).catch(()=>{});
+  }
   function renderDns(){
     const r=dnsCapture?.report, a=dnsCapture?.assessment;
     $('dns-start').disabled=dnsBusy||!!r?.running||!invoke;$('dns-stop').disabled=dnsBusy||!r?.running;
+    if($('dns-probe'))$('dns-probe').disabled=dnsBusy||!r?.running||r?.packetState!=='active'||!invoke;
     $('dns-policy-proxy').setAttribute('aria-pressed',String(dnsPolicy==='proxy_required'));
     $('dns-policy-observe').setAttribute('aria-pressed',String(dnsPolicy==='observe'));
     $('dns-policy-proxy').disabled=$('dns-policy-observe').disabled=dnsBusy;
     $('dns-duration-short').setAttribute('aria-pressed',String(dnsSeconds===30));$('dns-duration-long').setAttribute('aria-pressed',String(dnsSeconds===120));
     $('dns-duration-short').disabled=$('dns-duration-long').disabled=dnsBusy||!!r?.running;
-    for(const key of ['all','physical','encrypted'])$(`dns-filter-${key}`).setAttribute('aria-pressed',String(key===dnsFilter));
+    for(const key of ['summary','overseas','domestic','physical','encrypted','all'])$(`dns-filter-${key}`)?.setAttribute('aria-pressed',String(key===dnsFilter));
     const errors=$('dns-errors');errors.replaceChildren();if(dnsError)errors.append(text('p',dnsError));
     if(!r){
       if(dnsError)$('dns-state').textContent='DNS 操作未完成';
-      $('dns-detail').textContent=`当前条件：${dnsPolicy==='proxy_required'?'DNS 应经代理 / 隧道':'仅观察分流'}。点击开始后正常使用应用，采集 DNS 查询与网卡报文。`;
+      $('dns-verdict-box')?.setAttribute('data-status','idle');
+      if($('dns-badge'))$('dns-badge').textContent='待开始';
+      $('dns-detail').textContent='点击「开始本地检查」自动区分海外与国内 DNS 出口，并核对是否绕过代理隧道。';
+      for(const id of ['dns-metric-physical','dns-metric-tunnel','dns-metric-domestic','dns-metric-encrypted'])setMetric(id,'—','neutral');
+      if($('dns-resolvers')){$('dns-resolvers').replaceChildren();$('dns-resolvers').hidden=true;}
       return;
     }
+    maybeAutoProbe(r);
     const starting=r.packetState==='starting'||r.eventState==='starting';
-    $('dns-state').textContent=`${r.running?(r.packetState==='awaiting_authorization'?'等待 Windows 授权':starting?'正在启动本地采集':'持续采集中'):'采集已结束'} · ${time(r.startedAt)}${r.stoppedAt?' — '+time(r.stoppedAt):''}`;
+    $('dns-state').textContent=`${r.running?(r.packetState==='awaiting_authorization'?'等待 Windows 授权':starting?'正在启动采集':'采集中'):'已结束'} · ${time(r.startedAt)}${r.stoppedAt?' — '+time(r.stoppedAt):''}`;
     const pending=dnsCapture.policy!==dnsPolicy;
-    const condition=dnsPolicy==='proxy_required'?'DNS 应经代理 / 隧道':'仅观察分流';
-    $('dns-verdict').textContent=pending?'正在按当前条件重新判断':starting?'正在连接 Windows 采集接口':a.title;
+    const statusKey=pending?'starting':starting?'starting':a.status;
+    $('dns-verdict-box')?.setAttribute('data-status',statusKey);
+    if($('dns-badge'))$('dns-badge').textContent=pending?'重算中':(dnsStatusBadges[statusKey]||statusKey);
+    $('dns-verdict').textContent=pending?'正在按当前条件重新判断':starting?'正在启动本地采集':a.title;
     $('dns-verdict').className=!pending&&a.status==='leak'?'dns-leak':'';
-    $('dns-detail').textContent=`当前条件：${condition}。${pending?'正在使用已有采集记录重算，无需重新采集。':starting?'正在自动发现网卡并订阅 DNS 事件。':a.detail}${!pending&&['incomplete','no_sample','unavailable'].includes(a.status)?' 切换条件不会补足缺失的采集证据。':''}`;
+    $('dns-detail').textContent=pending?'正在按所选模式重新归类已采集记录…':starting?'正在枚举本机网卡并订阅 DNS 事件…':a.detail;
     const c=r.coverage;
-    $('dns-counts').textContent=`${c.windowsEvents} 条系统 DNS 事件 · ${c.dnsMessages} 条明文 DNS 报文 · ${a.physicalQueries} 条物理出口查询 · ${a.encryptedEvents} 条系统加密查询`;
+    const fallback=(!a.resolvers||!a.queries||a.uniqueDomains==null)?fallbackDnsSummary(r,a):null;
+    const resolvers=a.resolvers?.length||!fallback?(a.resolvers||[]):fallback.resolvers;
+    const summaryQueries=a.queries?.length||!fallback?(a.queries||[]):fallback.queries;
+    const tunnelTotal=a.tunnelQueries ?? ((c.tunnelQueries||0)+(c.loopbackQueries||0));
+    const domesticTotal=a.domesticQueries ?? (c.domesticDirectQueries||0);
+    const hasSamples=c.dnsMessages>0||c.windowsEvents>0||a.encryptedEvents>0;
+    setMetric('dns-metric-physical',a.physicalQueries,a.physicalQueries>0?(dnsPolicy==='proxy_required'?'danger':'warn'):hasSamples?'ok':'neutral');
+    setMetric('dns-metric-tunnel',tunnelTotal,tunnelTotal>0?'ok':'neutral');
+    setMetric('dns-metric-domestic',domesticTotal,domesticTotal>0?'info':'neutral');
+    setMetric('dns-metric-encrypted',a.encryptedEvents,a.encryptedEvents>0?'info':'neutral');
+    const resolverBox=$('dns-resolvers');
+    if(resolverBox){
+      resolverBox.replaceChildren();
+      resolverBox.hidden=!resolvers.length;
+      for(const item of resolvers){
+        const chip=text('div','',`dns-resolver-chip route-${item.routeKind}`);
+        chip.append(
+          text('span',dnsRouteLabels[item.routeKind]||item.routeKind,`dns-badge route-${item.routeKind}`),
+          text('strong',item.resolver,'dns-resolver-ip'),
+          text('span',item.interfaceName,'dns-resolver-iface'),
+          text('span',`${item.queries} 次`,'dns-resolver-count')
+        );
+        if(item.domains?.length)chip.title=`示例域名：${item.domains.join('、')}`;
+        resolverBox.append(chip);
+      }
+    }
     for(const message of r.errors)errors.append(text('p',message));
     const status={active:'已接通',starting:'启动中',awaiting_authorization:'等待授权',cancelled:'已取消',permission_required:'权限不足',unsupported:'不可用',failed:'异常'};
-    $('dns-coverage').textContent=`网卡捕获：${status[r.packetState]||r.packetState}；系统 DNS 事件：${status[r.eventState]||r.eventState}。丢失报文 ${c.lostPackets}，丢失事件 ${c.lostEvents}，队列丢失 ${c.queueDrops}，解析失败 ${c.parseFailures}，未重组 IP 分片 ${c.fragments}，不支持的帧 ${c.unsupportedPackets}，不完整 TCP ${c.incompleteTcp}，未知网卡 ${c.unknownInterfaces}，超出保留上限 ${c.retainedRowsDropped}。Windows DoH/DoT 可见；应用自带加密 DNS 的正文不保证可见。`;
+    const diagParts=[
+      `网卡抓包：${status[r.packetState]||r.packetState}`,
+      `系统事件：${status[r.eventState]||r.eventState}`,
+      `明文 DNS ${c.dnsMessages}`,
+      `系统事件 ${c.windowsEvents}`
+    ];
+    if(c.duplicatePackets)diagParts.push(`已去重 ${c.duplicatePackets}`);
+    if(c.lostPackets)diagParts.push(`缓冲丢包 ${c.lostPackets}`);
+    if(c.lostEvents)diagParts.push(`丢事件 ${c.lostEvents}`);
+    if(c.queueDrops)diagParts.push(`队列溢出 ${c.queueDrops}`);
+    if(c.parseFailures)diagParts.push(`解析失败 ${c.parseFailures}`);
+    if(c.unknownInterfaces)diagParts.push(`未知接口 ${c.unknownInterfaces}`);
+    $('dns-coverage').textContent=diagParts.join(' · ');
     const interfaces=$('dns-interfaces');interfaces.replaceChildren();
-    for(const i of r.interfaces)interfaces.append(text('p',`${i.name} · ${i.hardware===true?'物理网卡':i.hardware===false?'虚拟接口':'类型未知'} · 接口 ${i.index??'未知'} · 组件 ${i.componentId}`));
+    for(const i of r.interfaces)interfaces.append(text('p',`${i.name} · ${i.hardware===true?'物理网卡':i.hardware===false?'虚拟接口':'其他组件'} · 接口 ${i.index??'—'}`));
+    const head=$('dns-table-head');
+    const isSummaryMode=dnsFilter==='summary'||dnsFilter==='overseas'||dnsFilter==='domestic';
+    const headers=isSummaryMode?['域名 / 区域','出口路径','解析器 / 网卡','进程','解析结果','次数 / 时间']:['时间 / 来源','查询','阶段 / 结果','进程','解析器','接口 / 方向'];
+    if(head){head.replaceChildren();for(const h of headers)head.append(text('th',h));}
+    const rows=$('dns-rows');rows.replaceChildren();
+    if(isSummaryMode){
+      const list=dnsFilter==='overseas'
+        ? summaryQueries.filter(q=>q.region==='overseas')
+        : dnsFilter==='domestic'
+          ? summaryQueries.filter(q=>q.region==='domestic'||q.region==='local'||q.routeKind==='domestic_direct')
+          : summaryQueries;
+      for(const q of list.slice(0,150)){
+        const tr=text('tr','',q.isLeak?'dns-evidence':'');
+        const types=(q.queryTypes||[]).map(t=>dnsTypeNames[t]||t).join(' / ')||'—';
+        const regionLabel=dnsRegionLabels[q.region]||'';
+        const c0=text('td','');
+        const titleRow=text('div','','dns-domain-row');
+        if(regionLabel)titleRow.append(text('span',regionLabel,`dns-region-tag region-${q.region}`));
+        titleRow.append(text('span',q.domain,'dns-domain-name'));
+        c0.append(titleRow,text('span',types,'dns-sub-meta'));
+        const c1=text('td','');c1.append(text('span',dnsRouteLabels[q.routeKind]||q.routeKind,`dns-badge route-${q.routeKind}`),text('span',q.transport||'','dns-sub-meta'));
+        const c2=text('td','');c2.append(text('span',q.resolver||'—','dns-mono'),text('span',q.interfaceName||'—','dns-sub-meta'));
+        const c3=text('td',q.process?`${q.process}${q.pid?' · '+q.pid:''}`:q.pid?`PID ${q.pid}`:'—');
+        const c4=text('td',(q.answers||[]).join('、')||'—','dns-mono');
+        const c5=text('td','');c5.append(text('span',`${q.count} 次`,'dns-mono'),text('span',q.lastSeen?time(q.lastSeen):'','dns-sub-meta'));
+        [c0,c1,c2,c3,c4,c5].forEach((cell,i)=>cell.setAttribute('data-label',headers[i]));
+        tr.append(c0,c1,c2,c3,c4,c5);rows.append(tr);
+      }
+      if(!list.length){const tr=text('tr',''),td=text('td',r.running?'等待 DNS 查询…':'暂无符合条件的 DNS 记录');td.colSpan=6;tr.append(td);rows.append(tr);}
+      $('dns-rows-status').textContent=`${list.length} 项查询汇总`;
+      return;
+    }
     const evidence=new Set(a.evidenceIds);
     const source=dnsFilter==='physical'?(r.leakEvidence||r.observations.filter(o=>evidence.has(o.id))):r.observations;
-    const filtered=source.filter(o=>dnsFilter!=='encrypted'||['DoH','DoT','TLS/853 candidate','QUIC/853 candidate'].includes(o.transport));
-    const rows=$('dns-rows');rows.replaceChildren();
+    const filtered=source.filter(o=>dnsFilter!=='encrypted'||dnsEncryptedTransports.has(o.transport));
     for(const o of filtered.slice(-100).reverse()){
       const tr=text('tr','',evidence.has(o.id)?'dns-evidence':'');
-      const type={1:'A',2:'NS',5:'CNAME',12:'PTR',15:'MX',16:'TXT',28:'AAAA',65:'HTTPS'}[o.queryType]||o.queryType||'—';
-      const result=[dnsPhases[o.phase]||o.phase,o.answers.join('、'),o.status!=null?`状态 ${o.status}`:'',o.truncated?'响应截断':''].filter(Boolean).join(' · ');
-      const direction={tx:'发送',rx:'接收',unknown:'方向未知'}[o.direction]||'事件记录';
-      const values=[`${time(o.observedAt)} · ${o.source==='packet'?'网卡报文':'Windows 事件'}`,`${o.domain||'加密正文不可见'} · ${type}`,`${o.transport} · ${result}`,o.pid?`${o.process||'进程名不可用'} · PID ${o.pid}`:'未关联进程',o.resolver||'未提供',`${o.interface?.name||'未提供实际接口'} · ${direction}`];
-      for(const [i,value] of values.entries()){const cell=text('td',value);cell.setAttribute('data-label',['时间 / 来源','查询','阶段 / 结果','进程','解析器','接口 / 方向'][i]);tr.append(cell);}rows.append(tr);
+      const type=dnsTypeNames[o.queryType]||o.queryType||'—';
+      const result=[dnsPhases[o.phase]||o.phase,o.answers.join('、'),o.status!=null&&o.status!==0?`状态 ${o.status}`:'',o.truncated?'截断':''].filter(Boolean).join(' · ');
+      const direction={tx:'发送',rx:'接收',unknown:'方向未知'}[o.direction]||'系统事件';
+      const values=[`${time(o.observedAt)} · ${o.source==='packet'?'网卡报文':'系统事件'}`,`${o.domain||'DoT/DoQ 加密连接'} · ${type}`,`${o.transport} · ${result}`,o.pid?`${o.process||'进程'} · ${o.pid}`:'—',o.resolver||'—',`${o.interface?.name||'—'} · ${direction}`];
+      for(const [i,value] of values.entries()){const cell=text('td',value);cell.setAttribute('data-label',headers[i]);tr.append(cell);}rows.append(tr);
     }
-    if(!filtered.length){const tr=text('tr',''),td=text('td',r.running?'等待符合条件的 DNS 记录':'本轮没有符合条件的记录');td.colSpan=6;tr.append(td);rows.append(tr);}
-    $('dns-rows-status').textContent=`显示最近 ${Math.min(filtered.length,100)} / ${filtered.length} 条；完整记录可生成 JSON 报告`;
+    if(!filtered.length){const tr=text('tr',''),td=text('td',r.running?'等待 DNS 记录…':'暂无符合条件的记录');td.colSpan=6;tr.append(td);rows.append(tr);}
+    $('dns-rows-status').textContent=`最近 ${Math.min(filtered.length,100)} / ${filtered.length} 条明细`;
   }
   async function pollDns(){
     clearTimeout(dnsTimer);if(!invoke||dnsBusy)return;
@@ -124,15 +246,17 @@
   }
   async function controlDns(command){
     if(!invoke||dnsBusy)return;
+    if(command==='dns_capture_start')dnsProbedRun=null;
     dnsBusy=true;dnsError='';dnsRevision++;clearTimeout(dnsTimer);renderDns();
     try{dnsCapture=await invoke(command,{seconds:dnsSeconds,policy:dnsPolicy});}
     catch(error){dnsError=`DNS 操作失败：${error?.message||String(error)}`;}
     finally{dnsBusy=false;renderDns();if(dnsCapture?.report.running)dnsTimer=setTimeout(pollDns,500);}
   }
   $('dns-start').onclick=()=>controlDns('dns_capture_start');$('dns-stop').onclick=()=>controlDns('dns_capture_stop');
+  if($('dns-probe'))$('dns-probe').onclick=()=>{if(!invoke||dnsBusy||!dnsCapture?.report?.running)return;Promise.resolve(invoke('dns_capture_probe')).then(()=>setTimeout(pollDns,350)).catch(()=>{});};
   for(const [id,policy] of [['dns-policy-proxy','proxy_required'],['dns-policy-observe','observe']])$(id).onclick=()=>{if(dnsBusy)return;dnsPolicy=policy;dnsRevision++;renderDns();if(dnsCapture)return pollDns();};
   for(const [id,seconds] of [['dns-duration-short',30],['dns-duration-long',120]])$(id).onclick=()=>{if(dnsBusy||dnsCapture?.report.running)return;dnsSeconds=seconds;renderDns();};
-  for(const key of ['all','physical','encrypted'])$(`dns-filter-${key}`).onclick=()=>{dnsFilter=key;renderDns();};
+  for(const key of ['summary','overseas','domestic','physical','encrypted','all'])$(`dns-filter-${key}`) && ($(`dns-filter-${key}`).onclick=()=>{dnsFilter=key;renderDns();});
   renderDns();
   function renderActivePrivacy(){
     const list=$('privacy-active-results');list.replaceChildren();
@@ -180,7 +304,7 @@
       card.append(text('h4',check.name),text('strong',check.result),text('p',check.reason),text('p',`建议：${check.action}`,'privacy-action'));checks.append(card);
     }
     $('privacy-state').textContent=`${current?time(current.time):'尚无快照'} · ${report.findings.length} 条线索`;
-    $('privacy-coverage').textContent=`连接快照包含 ${report.coverage.connections} 条连接，${report.coverage.unknownRoutes} 条路由待确认。DNS 查询正文和网卡证据请查看上方本地检查；连接快照不含这些信息。${report.errors.length?'采集异常：'+report.errors.join('；'):''}`;
+    $('privacy-coverage').textContent=`当前快照 ${report.coverage.connections} 条连接，其中 ${report.coverage.unknownRoutes} 条路由待确认。${report.errors.length?'采集异常：'+report.errors.join('；'):''}`;
     const list=$('privacy-findings');list.replaceChildren();
     for(const finding of report.findings){
       const card=text('article','', 'privacy-finding');
@@ -196,7 +320,7 @@
       details.append(fields);
       card.append(details);list.append(card);
     }
-    if(!report.findings.length)list.append(text('p',current?'当前样本未触发检查条件；不表示已排除泄漏。':'等待连接采样。'));
+    if(!report.findings.length)list.append(text('p',current?'当前连接快照无异常项。':'等待连接采样。'));
   }
   $('privacy-proxy').onchange=()=>{
     privacyPolicy={...privacyPolicy,expectProxy:$('privacy-proxy').checked};renderPrivacy();
@@ -212,7 +336,7 @@
     for(const item of window.PrivacyModel.describeEnvironment(privacyEnvironment)){
       const card=text('article','', 'privacy-check');card.append(text('h4',item.name),text('strong',item.value),text('p',item.meaning));list.append(card);
     }
-    $('privacy-environment-status').textContent='已读取当前页面可暴露的 4 类信息；尚未检测指纹唯一性或跨会话追踪。';
+    $('privacy-environment-status').textContent='已读取当前 WebView 环境的 4 项基础特征。';
   };
   $('privacy-report').onclick=()=>{const report=privacyReport();$('privacy-report-result').value=JSON.stringify({...report,interpretation:window.PrivacyModel.summarize(report)},null,2);};
   function selectView(next) {
@@ -404,21 +528,30 @@
     $('group-session').replaceChildren();$('group-session').hidden=peers.length<2;
     for(const peer of peers){const option=text('option',`${peer.app} · ${peer.protocol} :${peer.port} · ${peer.source}`);option.value=peer.id;$('group-session').append(option);}
     $('group-session').value=f?.id || '';
-    const body=$('inspect-content');body.replaceChildren();
-    if(!f){body.append(text('p','点击节点、连线或会话，查看对应证据。','empty-detail'));return;}
-    if(tab==='raw'){
-      body.append(text('pre',JSON.stringify(f.system?{controller:f.raw,system:f.system}:f.processOwner?{controller:f.raw,process_owner:f.processOwner}:f.raw,null,2)));
-      const details=document.createElement('details'),summary=text('summary','数据包');details.append(summary,text('p','当前来源为连接快照，尚未接入原始数据包。','empty-detail'));body.append(details);return;
+    const body=$('inspect-content');
+    const inspectKey=`${f?.id || ''}|${tab}`;
+    const prevScroll=inspectKey===lastInspectKey?(body.scrollTop || 0):0;
+    lastInspectKey=inspectKey;
+    const nodes=[];
+    if(!f){nodes.push(text('p','点击节点、连线或会话，查看对应证据。','empty-detail'));}
+    else if(tab==='raw'){
+      nodes.push(text('pre',JSON.stringify(f.system?{controller:f.raw,system:f.system}:f.processOwner?{controller:f.raw,process_owner:f.processOwner}:f.raw,null,2)));
+      const details=document.createElement('details'),summary=text('summary','数据包');details.append(summary,text('p','当前来源为连接快照，尚未接入原始数据包。','empty-detail'));nodes.push(details);
     }
-    if(tab==='events'){
+    else if(tab==='events'){
       const events=[{time:f.origin==='system'?shown().time:new Date(f.start).getTime(),text:f.origin==='system'?'系统 TCP 连接快照':'控制器报告的会话开始',evidence:`连接 ${f.id}`},...(shown()?.events || []).filter(e=>e.id===f.id)];
-      for(const e of events){const item=text('div','',`event-item ${e.level || ''}`);item.append(text('time',Number.isFinite(e.time)?time(e.time):'时间未知'),text('p',e.text),text('p',e.evidence,'endpoint'));body.append(item);}return;
+      for(const e of events){const item=text('div','',`event-item ${e.level || ''}`);item.append(text('time',Number.isFinite(e.time)?time(e.time):'时间未知'),text('p',e.text),text('p',e.evidence,'endpoint'));nodes.push(item);}
     }
-    body.append(routeStrip(f));
-    const dl=document.createElement('dl');
-    for(const [k,v] of Object.entries({'来源':f.origin==='system'?'系统 TCP（路由待确认）':f.routing==='direct'?'Mihomo · DIRECT 直连':'Mihomo · '+(f.routing==='proxy'?'代理转发':'路由待确认'),'应用':`${f.app} · PID ${f.pid}`,'进程依据':f.processSource==='windows-pid'?'Windows 进程表（PID）':f.processSource==='windows-socket'?'Windows 连接所属进程':f.processSource==='windows-udp'?'Windows UDP 端点所属进程':f.processSource==='controller'?'控制器报告':'未提供 PID 或无法唯一匹配系统连接','源地址':f.source,'匹配规则':f.rule,'观测状态':f.origin==='system'?'已建立 · 无逐连接流量计数':f.rx===null?'等待连续快照':f.rx+f.tx>0?'有流量增量':'本次无流量增量'})){dl.append(text('dt',k),text('dd',v));}body.append(dl);
-    const pair=text('div','','traffic-pair');
-    for(const [label,v] of [['累计下载',f.download],['累计上传',f.upload]]){const cell=document.createElement('div');cell.append(text('span',label),text('strong',M.bytes(v)));pair.append(cell);}body.append(pair);
+    else {
+      nodes.push(routeStrip(f));
+      const dl=document.createElement('dl');
+      for(const [k,v] of Object.entries({'来源':f.origin==='system'?'系统 TCP（路由待确认）':f.routing==='direct'?'Mihomo · DIRECT 直连':'Mihomo · '+(f.routing==='proxy'?'代理转发':'路由待确认'),'应用':`${f.app} · PID ${f.pid}`,'进程依据':f.processSource==='windows-pid'?'Windows 进程表（PID）':f.processSource==='windows-socket'?'Windows 连接所属进程':f.processSource==='windows-udp'?'Windows UDP 端点所属进程':f.processSource==='controller'?'控制器报告':'未提供 PID 或无法唯一匹配系统连接','源地址':f.source,'匹配规则':f.rule,'观测状态':f.origin==='system'?'已建立 · 无逐连接流量计数':f.rx===null?'等待连续快照':f.rx+f.tx>0?'有流量增量':'本次无流量增量'})){dl.append(text('dt',k),text('dd',v));}nodes.push(dl);
+      const pair=text('div','','traffic-pair');
+      for(const [label,v] of [['累计下载',f.download],['累计上传',f.upload]]){const cell=document.createElement('div');cell.append(text('span',label),text('strong',M.bytes(v)));pair.append(cell);}nodes.push(pair);
+    }
+    // 同一会话定时刷新时保持检查器滚动位置，切换会话或标签后回顶。 / Keep scrollTop on live refresh for the same flow/tab; reset on switch.
+    body.replaceChildren(...nodes);
+    body.scrollTop=prevScroll;
   }
   $('flow-animation').checked=true;document.body?.classList.add('flow-animation');
   $('flow-animation').onchange=()=>{animationEnabled=$('flow-animation').checked;document.body?.classList.toggle('flow-animation',animationEnabled);renderGraph(visible());};

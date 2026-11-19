@@ -104,8 +104,10 @@ fn main() {
             commands::inspect_dns,
             dns_capture::dns_capture_start,
             dns_capture::dns_capture_snapshot,
+            dns_capture::dns_capture_probe,
             dns_capture::dns_capture_stop,
             discovery::discover_controllers,
+            commands::discover_databases,
             commands::sessions,
             commands::diagnose,
             packet_loss::ping
