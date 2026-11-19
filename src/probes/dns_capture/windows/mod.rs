@@ -77,6 +77,7 @@ pub(super) struct Sink {
     pub queue_drops: Arc<AtomicU64>,
     pub packet_loss: Arc<AtomicU64>,
     pub packet_read_count: Arc<AtomicU64>,
+    pub oversized_read_credit: Arc<AtomicU64>,
     pub event_loss: Arc<AtomicU64>,
     pub oversized_warnings: Arc<AtomicU64>,
 }
@@ -568,6 +569,7 @@ pub(super) fn run(shared: Arc<Mutex<Report>>, stop: Arc<AtomicBool>, auto_author
         queue_drops: Arc::new(AtomicU64::new(0)),
         packet_loss: Arc::new(AtomicU64::new(0)),
         packet_read_count: Arc::new(AtomicU64::new(0)),
+        oversized_read_credit: Arc::new(AtomicU64::new(0)),
         event_loss: Arc::new(AtomicU64::new(0)),
         oversized_warnings: Arc::new(AtomicU64::new(0)),
     };

@@ -5,7 +5,7 @@ use std::{
     ffi::c_void,
     mem::size_of,
     ptr::null_mut,
-    sync::atomic::Ordering,
+    sync::atomic::{AtomicU64, Ordering},
 };
 use windows_sys::{
     Win32::{
@@ -200,28 +200,10 @@ impl Session {
             )
         })?;
         s.refresh()?;
-        for port in [53, 853] {
-            for protocol in [6, 17] {
-                for source in [true, false] {
-                    let mut c: Constraint = unsafe { std::mem::zeroed() };
-                    let name = wide(&format!(
-                        "dns-{protocol}-{port}-{}",
-                        if source { "source" } else { "destination" }
-                    ));
-                    c.name[..name.len()].copy_from_slice(&name);
-                    if source {
-                        c.present = (1 << 5) | (1 << 11);
-                        c.port1 = port;
-                    } else {
-                        c.present = (1 << 5) | (1 << 12);
-                        c.port2 = port;
-                    }
-                    c.protocol = protocol;
-                    check("PacketMonitorAddCaptureConstraint", unsafe {
-                        (s.api.add_constraint)(s.session, &c)
-                    })?;
-                }
-            }
+        for c in dns_constraints() {
+            check("PacketMonitorAddCaptureConstraint", unsafe {
+                (s.api.add_constraint)(s.session, &c)
+            })?;
         }
         if s.added.is_empty() {
             return Err(NativeError {
@@ -233,7 +215,7 @@ impl Session {
             context: (&mut *s.context as *mut Sink).cast(),
             event: Some(stream_event),
             data: Some(packet),
-            multiplier: 20,
+            multiplier: 10,
             truncation: 9000,
         };
         check("PacketMonitorCreateRealtimeStream", unsafe {
@@ -463,19 +445,60 @@ impl Drop for Session {
         }
     }
 }
+fn dns_constraints() -> Vec<Constraint> {
+    // PktMon Port1 默认双向匹配源/目的端口，避免孤立 Port2 导致过滤退化。 / PktMon Port1 matches either endpoint; avoid orphan Port2 rules.
+    let mut constraints = Vec::with_capacity(4);
+    for port in [53, 853] {
+        for protocol in [6, 17] {
+            let mut c: Constraint = unsafe { std::mem::zeroed() };
+            let name = wide(&format!("dns-{protocol}-{port}"));
+            c.name[..name.len()].copy_from_slice(&name);
+            c.present = (1 << 5) | (1 << 11);
+            c.protocol = protocol;
+            c.port1 = port;
+            constraints.push(c);
+        }
+    }
+    constraints
+}
+fn advance_monotonic(counter: &AtomicU64, current: u64) -> u64 {
+    let mut prev = counter.load(Ordering::Relaxed);
+    while current > prev {
+        match counter.compare_exchange_weak(prev, current, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return current - prev,
+            Err(actual) => prev = actual,
+        }
+    }
+    0
+}
+fn consume_credit(credit: &AtomicU64, amount: u64) -> u64 {
+    let mut current = credit.load(Ordering::Relaxed);
+    while current > 0 {
+        let take = current.min(amount);
+        match credit.compare_exchange_weak(
+            current,
+            current - take,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return take,
+            Err(actual) => current = actual,
+        }
+    }
+    0
+}
 unsafe extern "system" fn packet(context: Handle, descriptor: *const Descriptor) {
     if context.is_null() || descriptor.is_null() {
         return;
     }
     let sink = unsafe { &*context.cast::<Sink>() };
     let d = unsafe { &*descriptor };
-    let previous_reads = sink
-        .packet_read_count
-        .swap(d.missed_read as u64, Ordering::Relaxed) as u32;
-    sink.packet_loss.fetch_add(
-        d.missed_write as u64 + d.missed_read.wrapping_sub(previous_reads) as u64,
-        Ordering::Relaxed,
-    );
+    let read_delta = advance_monotonic(&sink.packet_read_count, d.missed_read as u64);
+    // 扣除已由 ERROR_INSUFFICIENT_BUFFER(122) 归因的超长包，保留真实读/写丢包。 / Exclude 122-attributed oversized skips from read-loss while keeping real drops.
+    let accounted_oversized = consume_credit(&sink.oversized_read_credit, read_delta);
+    let unexplained_read_loss = read_delta - accounted_oversized;
+    sink.packet_loss
+        .fetch_add(d.missed_write as u64 + unexplained_read_loss, Ordering::Relaxed);
     if d.packet_length > 9000 {
         sink.oversized_warnings.fetch_add(1, Ordering::Relaxed);
         return;
@@ -570,10 +593,11 @@ unsafe extern "system" fn stream_event(context: Handle, info: *const c_void, kin
             }
         }
         3 => {
-            // 超长非 DNS 大包（ERROR_INSUFFICIENT_BUFFER=122）只记为忽略计数，不破坏采集状态。 / Ignore oversized buffer warnings (122); report real errors.
+            // 超长非 DNS 大包（ERROR_INSUFFICIENT_BUFFER=122）只记为忽略计数，并抵扣其随后带入 missed_read 的 1 条计数。 / Ignore oversized 122 skips and credit their matching missed_read tick.
             let state = unsafe { &*info.cast::<ProcessInfo>() };
             if state.reason == 122 || state.reason == 0x8007007A {
                 sink.oversized_warnings.fetch_add(1, Ordering::Relaxed);
+                sink.oversized_read_credit.fetch_add(1, Ordering::Relaxed);
                 return;
             }
             sink.packet_loss.fetch_add(1, Ordering::Relaxed);
@@ -645,6 +669,7 @@ mod tests {
             queue_drops: Arc::new(AtomicU64::new(0)),
             packet_loss: Arc::new(AtomicU64::new(0)),
             packet_read_count: Arc::new(AtomicU64::new(0)),
+            oversized_read_credit: Arc::new(AtomicU64::new(0)),
             event_loss: Arc::new(AtomicU64::new(0)),
             oversized_warnings: Arc::new(AtomicU64::new(0)),
         };
@@ -720,6 +745,76 @@ mod tests {
             assert_eq!(size_of::<Descriptor>(), 32);
             assert_eq!(size_of::<StreamConfig>(), 32);
         }
+    }
+    #[test]
+    fn dns_constraints_use_bidirectional_port1_without_orphan_port2() {
+        let constraints = dns_constraints();
+        assert_eq!(constraints.len(), 4);
+        for c in &constraints {
+            assert_eq!(c.present, (1 << 5) | (1 << 11));
+            assert!(matches!(c.protocol, 6 | 17));
+            assert!(matches!(c.port1, 53 | 853));
+            assert_eq!(c.port2, 0);
+        }
+    }
+    #[test]
+    fn oversized_122_skips_do_not_inflate_packet_loss_while_real_drops_are_kept() {
+        use std::sync::{Arc, atomic::AtomicU64, mpsc};
+        let (tx, _rx) = mpsc::sync_channel(8);
+        let mut sink = Sink {
+            tx,
+            queue_drops: Arc::new(AtomicU64::new(0)),
+            packet_loss: Arc::new(AtomicU64::new(0)),
+            packet_read_count: Arc::new(AtomicU64::new(0)),
+            oversized_read_credit: Arc::new(AtomicU64::new(0)),
+            event_loss: Arc::new(AtomicU64::new(0)),
+            oversized_warnings: Arc::new(AtomicU64::new(0)),
+        };
+        let mut raw = vec![0u8; 56];
+        raw[14..16].copy_from_slice(&3u16.to_le_bytes());
+        let oversized = ProcessInfo {
+            warning: 1,
+            reason: 122,
+            packet_length: 9064,
+        };
+        // 连续 3 次 122 警告后，下一条正常包的 missed_read 累计到 3，应全部抵扣。 / 3 oversized 122 warnings followed by missed_read=3 should yield 0 packet_loss.
+        for _ in 0..3 {
+            unsafe {
+                stream_event(
+                    (&mut sink as *mut Sink).cast(),
+                    (&oversized as *const ProcessInfo).cast(),
+                    3,
+                );
+            }
+        }
+        let desc1 = Descriptor {
+            data: raw.as_ptr(),
+            size: raw.len() as u32,
+            metadata_offset: 0,
+            packet_offset: 40,
+            packet_length: 16,
+            missed_write: 0,
+            missed_read: 3,
+        };
+        unsafe { packet((&mut sink as *mut Sink).cast(), &desc1) };
+        assert_eq!(sink.oversized_warnings.load(Ordering::Relaxed), 3);
+        assert_eq!(sink.packet_loss.load(Ordering::Relaxed), 0);
+        // 后续真实读丢包 (+2) 与写丢包 (+4) 必须如实计入。 / Real read/write drops beyond 122 credit must still be counted.
+        let desc2 = Descriptor {
+            missed_write: 4,
+            missed_read: 5,
+            ..desc1
+        };
+        unsafe { packet((&mut sink as *mut Sink).cast(), &desc2) };
+        assert_eq!(sink.packet_loss.load(Ordering::Relaxed), 6);
+        // 乱序回退的 missed_read 不应发生无符号下溢。 / Out-of-order lower missed_read must not underflow.
+        let desc3 = Descriptor {
+            missed_write: 0,
+            missed_read: 2,
+            ..desc1
+        };
+        unsafe { packet((&mut sink as *mut Sink).cast(), &desc3) };
+        assert_eq!(sink.packet_loss.load(Ordering::Relaxed), 6);
     }
     #[test]
     fn api_exports_are_available() {

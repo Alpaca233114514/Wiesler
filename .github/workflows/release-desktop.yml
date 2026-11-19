@@ -1,0 +1,141 @@
+name: Release Desktop (Windows)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (leave empty to build artifact only)'
+        required: false
+        default: ''
+        type: string
+      prerelease:
+        description: 'Mark GitHub Release as pre-release'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    name: Build Windows desktop & CLI portable ZIP
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      release_tag: ${{ steps.meta.outputs.tag }}
+      zip_name: ${{ steps.meta.outputs.zip_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve release metadata
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          $tag = if ($env:EVENT_NAME -eq 'push' -and $env:REF_TYPE -eq 'tag') {
+            $env:REF_NAME
+          } else {
+            "$($env:INPUT_TAG)".Trim()
+          }
+          if ($tag -and $tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$') {
+            throw "Invalid release tag format: $tag"
+          }
+          $label = if ($tag) { $tag } else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
+          $zipName = "Wiesler-$label-windows-x64-unsigned.zip"
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "zip_name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Install locked Rust toolchain
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          rustup default 1.97.1
+
+      - name: Check package versions
+        run: python scripts/check-release-version.py
+
+      - name: Test and build Windows portable package
+        run: ./scripts/build-windows.ps1
+
+      - name: Archive Windows portable ZIP
+        env:
+          ZIP_NAME: ${{ steps.meta.outputs.zip_name }}
+        run: |
+          $zipPath = Join-Path 'dist' $env:ZIP_NAME
+          if (Test-Path $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+          Compress-Archive -Path 'dist/windows-x64/*' -DestinationPath $zipPath -CompressionLevel Optimal
+          Get-Item -LiteralPath $zipPath | Select-Object Name, Length
+
+      - name: Upload Windows desktop release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-desktop-release
+          path: dist/${{ steps.meta.outputs.zip_name }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    name: Publish Windows desktop GitHub Release
+    needs: build-windows
+    if: needs.build-windows.outputs.release_tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-desktop-release
+          path: release-assets
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build-windows.outputs.release_tag }}
+          ZIP_NAME: ${{ needs.build-windows.outputs.zip_name }}
+          IS_PRERELEASE: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          ASSET="release-assets/${ZIP_NAME}"
+          test -f "${ASSET}"
+
+          # 已有同名 Release 时仅更新 Windows 桌面产物，不触碰其余说明；否则新建桌面版 Release。
+          # Update Windows asset on existing tag release, or create a new desktop-only release.
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${ASSET}" --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            NOTES=$(cat <<EOF
+          Windows Desktop + CLI portable package (\`${ZIP_NAME}\`).
+
+          - Source commit: \`${GITHUB_SHA}\`
+          - Scope: Windows x64 desktop & CLI only (Android is not included in this workflow).
+          - Note: CI-built Windows binaries are unsigned (\`unsigned\`); for signed builds, sign locally with \`scripts/sign-desktop.ps1\`.
+          EOF
+          )
+            PRERELEASE_FLAG=()
+            if [ "${IS_PRERELEASE}" = "true" ]; then
+              PRERELEASE_FLAG=(--prerelease)
+            fi
+            gh release create "${RELEASE_TAG}" "${ASSET}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Wiesler ${RELEASE_TAG} (Desktop)" \
+              --notes "${NOTES}" \
+              "${PRERELEASE_FLAG[@]}"
+          fi
