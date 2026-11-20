@@ -1,0 +1,195 @@
+/* Wiesler Observatory Design System — Antigravity Neutral Carbon Palette
+   中性碳黑 / 素白设计令牌体系（对标 Antigravity 原生暗色灰阶） */
+:root {
+  color-scheme: light dark;
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "Cascadia Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+
+  /* Light Mode: Pure Neutral Porcelain & Graphite */
+  --bg: #f3f3f3;
+  --bg-chrome: #f9f9f9;
+  --surface: #ffffff;
+  --surface-raised: #efefef;
+  --surface-inset: #f5f5f5;
+  --text: #171717;
+  --text-secondary: #404040;
+  --muted: #737373;
+  --line: rgba(0, 0, 0, 0.08);
+  --line-strong: rgba(0, 0, 0, 0.14);
+  --structure: rgba(0, 0, 0, 0.08);
+
+  --primary: #2b7ab8;
+  --primary-hover: #206399;
+  --cta-bg: #1c1c1c;
+  --cta-hover: #303030;
+  --cta-fg: #fafafa;
+
+  --selected: rgba(0, 0, 0, 0.065);
+  --selected-strong: rgba(0, 0, 0, 0.11);
+  --selected-accent: rgba(43, 122, 184, 0.10);
+  --hover: rgba(0, 0, 0, 0.045);
+
+  --mint: #1d8858;
+  --mint-soft: rgba(29, 136, 88, 0.10);
+  --blue: #2b7ab8;
+  --blue-soft: rgba(43, 122, 184, 0.10);
+  --amber: #ad681b;
+  --amber-soft: rgba(173, 104, 27, 0.10);
+  --danger: #c93b3b;
+  --danger-soft: rgba(201, 59, 59, 0.10);
+
+  --edge: #9ca3af;
+  --grid: rgba(0, 0, 0, 0.075);
+  --glass: rgba(255, 255, 255, 0.86);
+  --mask: rgba(0, 0, 0, 0.45);
+
+  --radius-xs: 5px;
+  --radius-sm: 7px;
+  --radius-md: 9px;
+  --radius-lg: 12px;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04), 0 3px 10px rgba(0, 0, 0, 0.03);
+  --shadow-2: 0 6px 18px rgba(0, 0, 0, 0.10), 0 18px 40px rgba(0, 0, 0, 0.12);
+  --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+
+  --chevron-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%23737373' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 4.5 3 3 3-3'/%3E%3C/svg%3E");
+  --search-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16' fill='none' stroke='%23737373' stroke-width='1.6' stroke-linecap='round'%3E%3Ccircle cx='7' cy='7' r='4.6'/%3E%3Cpath d='m10.5 10.5 3.2 3.2'/%3E%3C/svg%3E");
+
+  font-family: var(--font-sans);
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Dark Mode: Antigravity Pure Achromatic Carbon (#101010 / #161616 / #202020) */
+    --bg: #101010;
+    --bg-chrome: #161616;
+    --surface: #181818;
+    --surface-raised: #222222;
+    --surface-inset: #131313;
+    --text: #ececec;
+    --text-secondary: #b5b5b5;
+    --muted: #7d7d7d;
+    --line: rgba(255, 255, 255, 0.075);
+    --line-strong: rgba(255, 255, 255, 0.13);
+    --structure: rgba(255, 255, 255, 0.07);
+
+    --primary: #6ba4cf;
+    --primary-hover: #88b8dc;
+    --cta-bg: #e6e6e6;
+    --cta-hover: #ffffff;
+    --cta-fg: #121212;
+
+    --selected: rgba(255, 255, 255, 0.09);
+    --selected-strong: rgba(255, 255, 255, 0.14);
+    --selected-accent: rgba(107, 164, 207, 0.13);
+    --hover: rgba(255, 255, 255, 0.055);
+
+    --mint: #56b886;
+    --mint-soft: rgba(86, 184, 134, 0.13);
+    --blue: #6ba4cf;
+    --blue-soft: rgba(107, 164, 207, 0.13);
+    --amber: #d99b4e;
+    --amber-soft: rgba(217, 155, 78, 0.13);
+    --danger: #df6c6c;
+    --danger-soft: rgba(223, 108, 108, 0.14);
+
+    --edge: #4a4a4a;
+    --grid: rgba(255, 255, 255, 0.065);
+    --glass: rgba(24, 24, 24, 0.86);
+    --mask: rgba(0, 0, 0, 0.68);
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.22);
+    --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.50), 0 20px 44px rgba(0, 0, 0, 0.55);
+    --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+
+    --chevron-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%237d7d7d' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 4.5 3 3 3-3'/%3E%3C/svg%3E");
+    --search-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16' fill='none' stroke='%237d7d7d' stroke-width='1.6' stroke-linecap='round'%3E%3Ccircle cx='7' cy='7' r='4.6'/%3E%3Cpath d='m10.5 10.5 3.2 3.2'/%3E%3C/svg%3E");
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-size: 13.5px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--bg);
+}
+
+button, input, select, textarea {
+  font: inherit;
+  border-radius: var(--radius-sm);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 1.5px solid var(--primary);
+  outline-offset: 2px;
+}
+
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.mark, .logo {
+  background: var(--surface-raised);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+}
+
+dialog {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  max-width: calc(100vw - 32px);
+}
+
+#download { stroke: var(--mint); }
+#upload { stroke: var(--blue); }
+#fade stop { stop-color: var(--mint); }
+
+@media (prefers-reduced-motion: no-preference) {
+  button, a, input, select, summary {
+    transition:
+      background-color 0.14s cubic-bezier(0.22, 1, 0.36, 1),
+      color 0.14s cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 0.14s cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 0.14s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}

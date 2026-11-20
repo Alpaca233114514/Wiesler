@@ -1,5 +1,12 @@
 # 来源与许可证
 
+## winptap Packet Monitor compatibility
+
+- 来源：[shellrow/winptap](https://github.com/shellrow/winptap)，2026-11-03 核对 `crates/winptap-core/src/wire.rs`、`crates/winptap-pktmon/src/stream.rs` 与 `source.rs`。
+- 许可证：MIT OR Apache-2.0；本项目采用 Apache-2.0，完整许可证见根目录 `LICENSE` 及上游 `LICENSE-APACHE`。
+- 借鉴范围：`src/probes/dns_capture/windows/pktmon.rs` 中驱动 40 字节紧凑元数据与 48 字节公开结构的兼容解析、累计读取丢包计数的差分处理，以及 GUID/MAC 共用字段的识别限制。
+- 修改：适配本项目 DNS 观测、覆盖统计和回调队列；未引入该项目依赖或驱动。
+
 ## DSHObserver
 
 - 项目：[Alpaca233114514/better-dsh — DSHObserver](https://github.com/Alpaca233114514/better-dsh/tree/main/DSHObserver)
@@ -11,3 +18,56 @@
 未将 DSHObserver 插件安装、升级或重新加载到用户的 DSH；可直接读取已安装插件产生的 JSONL。原项目现有许可证未列出具体版权姓名，不添加推测性的版权归属。
 
 Mihomo、bandwhich、OpenAI Codex 和 Clash-Verge-CLI 用于接口或环境调研；未复制这些项目的代码。
+
+## Papyrus Desktop
+
+`ui/theme.css` adapts the palette, radius and shadow tokens from [Papyrus Desktop](https://github.com/LiYuanStudio/Papyrus_Desktop/blob/main/frontend/src/theme.css), retrieved 2026-11-03. The layout and component styling are implemented for Wiesler. Dark-mode accent and status text colors are adjusted for readability.
+
+MIT License
+
+Copyright (c) 2026 ALPACA LI
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+## Coolshapes (`realvjy/coolshapes-react`)
+
+桌面与移动端单色应用标志（`desktop/icons/`、`desktop/ui/logo.svg`、`android/app/src/main/res/drawable/ic_launcher_*.xml` 与 `ic_logo_mark.xml`）改编自 [realvjy/coolshapes-react](https://github.com/realvjy/coolshapes-react) 的 `src/shapes/misc/2.tsx`（2026-11-17 核对），移除了中心圆点，并为双路弯管端帽与内拐角重绘了单色几何圆角及小尺寸光学微调。
+
+MIT License
+
+Copyright (c) 2024 Coolshapes
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

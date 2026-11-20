@@ -132,8 +132,16 @@ class MainActivity : Activity() {
             insets
         }
         val top = row().apply { setPadding(dp(23), dp(16), dp(23), dp(12)) }
-        top.addView(label("W", 22, bg, true).apply {
-            gravity = Gravity.CENTER; background = shape(mint, 12)
+        top.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_logo_mark)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            val pad = dp(7)
+            setPadding(pad, pad, pad, pad)
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(24, 24, 24))
+                cornerRadius = dp(11).toFloat()
+                setStroke(dp(1), Color.rgb(62, 62, 62))
+            }
         }, LinearLayout.LayoutParams(dp(38), dp(38)))
         top.addView(label("Wiesler", 23, ink, true).apply { setPadding(dp(11), 0, 0, 0) }, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(top)

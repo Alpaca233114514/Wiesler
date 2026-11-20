@@ -228,3 +228,24 @@ fn recovered_projection_keeps_old_connection_as_unknown_end() {
         })
     ));
 }
+
+#[test]
+fn identifies_wiesler_database_header_without_opening_unrelated_files() {
+    let valid = database("header-valid");
+    let _store = Store::open(&valid, 100).unwrap();
+    assert!(store::is_wiesler_database(&valid));
+
+    let foreign = database("header-foreign");
+    let db = rusqlite::Connection::open(&foreign).unwrap();
+    db.execute_batch("CREATE TABLE other (id INTEGER);")
+        .unwrap();
+    drop(db);
+    assert!(!store::is_wiesler_database(&foreign));
+
+    let text = database("header-text");
+    std::fs::write(&text, b"not a sqlite file").unwrap();
+    assert!(!store::is_wiesler_database(&text));
+
+    let missing = database("header-missing");
+    assert!(!store::is_wiesler_database(&missing));
+}

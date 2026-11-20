@@ -26,12 +26,17 @@ pub struct EgressLocation {
     pub region: Option<String>,
     pub city: Option<String>,
     pub isp: Option<String>,
+    pub timezone: Option<String>,
 }
 
 fn parse_location(bytes: &[u8], expected_ip: &str) -> Result<EgressLocation, String> {
     #[derive(Deserialize, Default)]
     struct Connection {
         isp: Option<String>,
+    }
+    #[derive(Deserialize, Default)]
+    struct Timezone {
+        id: Option<String>,
     }
     #[derive(Deserialize)]
     struct Location {
@@ -43,6 +48,8 @@ fn parse_location(bytes: &[u8], expected_ip: &str) -> Result<EgressLocation, Str
         city: Option<String>,
         #[serde(default)]
         connection: Connection,
+        #[serde(default)]
+        timezone: Timezone,
     }
     let data: Location = serde_json::from_slice(bytes).map_err(|_| "地理信息不可用".to_string())?;
     // 地址库必须对应本次实测 IP，不能将另一条路由的所在地混入。 / Bind location data to the measured IP.
@@ -61,6 +68,7 @@ fn parse_location(bytes: &[u8], expected_ip: &str) -> Result<EgressLocation, Str
         region: clean(data.region),
         city: clean(data.city),
         isp: clean(data.connection.isp),
+        timezone: clean(data.timezone.id),
     })
 }
 

@@ -2,9 +2,34 @@ use crate::core::event::{Connection as ObservedConnection, Event, EventData, SCH
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 use serde::Serialize;
-use std::{collections::BTreeMap, io::Write, path::Path, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::{Read, Write},
+    path::Path,
+    time::Duration,
+};
 
 const APPLICATION_ID: i32 = 0x5749534c;
+const SQLITE_HEADER_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+
+// 仅检查 SQLite 头部的 schema 与应用标识，避免打开非 Wiesler 数据库。
+// Inspect only the SQLite header so discovery skips unrelated databases without opening SQLite.
+pub fn is_wiesler_database(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; 72];
+    if file.read_exact(&mut header).is_err() {
+        return false;
+    }
+    if &header[..16] != SQLITE_HEADER_MAGIC {
+        return false;
+    }
+    let version = u32::from_be_bytes([header[60], header[61], header[62], header[63]]);
+    let app = i32::from_be_bytes([header[68], header[69], header[70], header[71]]);
+    version == SCHEMA_VERSION && app == APPLICATION_ID
+}
 
 pub struct Store {
     db: Connection,

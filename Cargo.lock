@@ -1094,7 +1094,7 @@ dependencies = [
 
 [[package]]
 name = "wiesler"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1105,6 +1105,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys",
 ]
 
 [[package]]
