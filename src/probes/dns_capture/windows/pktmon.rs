@@ -772,7 +772,7 @@ mod tests {
             event_loss: Arc::new(AtomicU64::new(0)),
             oversized_warnings: Arc::new(AtomicU64::new(0)),
         };
-        let mut raw = vec![0u8; 56];
+        let mut raw = [0u8; 56];
         raw[14..16].copy_from_slice(&3u16.to_le_bytes());
         let oversized = ProcessInfo {
             warning: 1,
