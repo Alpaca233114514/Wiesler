@@ -1,4 +1,4 @@
-# Wiesler 0.1.0 测试版 · Windows x64
+# Wiesler 0.1.1 测试版 · Windows x64
 
 解压整个目录后运行 `wiesler-desktop.exe`。需要 Windows 10/11 x64 和 Microsoft Edge WebView2 Runtime。命令行入口为 `wiesler.exe --help`。
 
