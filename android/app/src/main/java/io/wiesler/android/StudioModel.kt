@@ -1,14 +1,84 @@
 package io.wiesler.android
 
-data class StudioFlow(
-    val id: String, val start: String, val app: String, val host: String,
-    val source: String, val destination: String, val protocol: String, val route: String,
-    val rule: String, val download: Long, val upload: Long, val raw: String,
-    val rx: Double? = null, val tx: Double? = null, val event: String? = null
+import org.json.JSONObject
+import java.util.Locale
+
+enum class FlowRouting(val label: String) {
+    DIRECT("DIRECT 直连"),
+    PROXY("代理转发"),
+    UNKNOWN("路由待确认")
+}
+
+enum class StudioSourceFilter(val label: String) {
+    ALL("全部来源"),
+    DIRECT("DIRECT 直连"),
+    PROXY("代理转发"),
+    OVERSEAS("海外出口"),
+    OTHER("其他")
+}
+
+enum class RouteNodeKind {
+    DEVICE,
+    ROUTE,
+    UNKNOWN,
+    SERVER
+}
+
+data class RouteNode(
+    val kind: RouteNodeKind,
+    val label: String,
+    val detail: String
 )
 
+data class StudioHostGroup(
+    val key: String,
+    val label: String,
+    val flows: List<StudioFlow>
+)
+
+data class StudioFlow(
+    val id: String,
+    val start: String,
+    val app: String,
+    val host: String,
+    val source: String,
+    val destination: String,
+    val protocol: String,
+    val route: String,
+    val rule: String,
+    val download: Long,
+    val upload: Long,
+    val raw: String,
+    val rx: Double? = null,
+    val tx: Double? = null,
+    val event: String? = null
+) {
+    val hostKey: String get() = host.lowercase(Locale.ROOT).trimEnd('.')
+    val flowKey: String get() = "$id\u0000$start"
+    val destinationPort: String
+        get() {
+            val idx = destination.lastIndexOf(':')
+            return if (idx >= 0 && idx + 1 < destination.length) destination.substring(idx + 1) else "?"
+        }
+    val chainList: List<String>
+        get() = route.split(" → ").map { it.trim() }.filter { it.isNotEmpty() && it != "未知" }
+    val exitNode: String? get() = chainList.firstOrNull()
+    val routing: FlowRouting
+        get() {
+            val first = exitNode ?: return FlowRouting.UNKNOWN
+            return if (first.equals("DIRECT", ignoreCase = true)) FlowRouting.DIRECT else FlowRouting.PROXY
+        }
+}
+
 data class StudioFrame(
-    val time: Long, val wallTime: Long, val flows: List<StudioFlow>, val error: String? = null
+    val time: Long,
+    val wallTime: Long,
+    val flows: List<StudioFlow>,
+    val error: String? = null,
+    val downloadTotal: Long? = null,
+    val uploadTotal: Long? = null,
+    val rxTotal: Double? = null,
+    val txTotal: Double? = null
 )
 
 class StudioSession {
@@ -22,15 +92,30 @@ class StudioSession {
     var selectedId: String? = null
     var query = ""
     var protocol = "全部"
+    var sourceFilter = StudioSourceFilter.ALL
+    var overseasExits: Set<String> = emptySet()
 
     fun switchSource(value: Boolean) {
         if (live == value) return
-        live = value; frames.clear(); held = null; baseline = null; selectedId = null
+        live = value
+        frames.clear()
+        held = null
+        baseline = null
+        selectedId = null
     }
 
-    fun resetBaseline() { baseline = null }
+    fun resetBaseline() {
+        baseline = null
+    }
 
-    fun accept(flows: List<StudioFlow>, time: Long, wallTime: Long, error: String? = null) {
+    fun accept(
+        flows: List<StudioFlow>,
+        time: Long,
+        wallTime: Long,
+        error: String? = null,
+        downloadTotal: Long? = null,
+        uploadTotal: Long? = null
+    ) {
         val previous = baseline
         val prior = previous?.flows?.associateBy { it.id }.orEmpty()
         val elapsed = previous?.let { time - it.time } ?: 0L
@@ -40,27 +125,165 @@ class StudioSession {
             val valid = elapsed in 1..5000 && old != null && old.start == flow.start &&
                 old.route == flow.route && old.download >= 0 && old.upload >= 0 &&
                 flow.download >= old.download && flow.upload >= old.upload
-            flow.copy(rx = if (valid) (flow.download - old!!.download) * 1000.0 / elapsed else null,
-                tx = if (valid) (flow.upload - old!!.upload) * 1000.0 / elapsed else null)
+            flow.copy(
+                rx = if (valid) (flow.download - old!!.download) * 1000.0 / elapsed else null,
+                tx = if (valid) (flow.upload - old!!.upload) * 1000.0 / elapsed else null
+            )
         }
-        val frame = StudioFrame(time, wallTime, sampled, error)
+        val prevDown = previous?.downloadTotal
+        val prevUp = previous?.uploadTotal
+        val validTotals = error == null && elapsed in 1..5000 &&
+            prevDown != null && prevUp != null &&
+            downloadTotal != null && uploadTotal != null &&
+            downloadTotal >= prevDown && uploadTotal >= prevUp
+        val frame = StudioFrame(
+            time = time,
+            wallTime = wallTime,
+            flows = sampled,
+            error = error,
+            downloadTotal = if (error == null) downloadTotal else null,
+            uploadTotal = if (error == null) uploadTotal else null,
+            rxTotal = if (validTotals) (downloadTotal!! - prevDown!!) * 1000.0 / elapsed else null,
+            txTotal = if (validTotals) (uploadTotal!! - prevUp!!) * 1000.0 / elapsed else null
+        )
         baseline = if (error == null) frame else null
         frames.add(frame)
         if (frames.size > 60) frames.removeAt(0)
     }
 
-    fun freeze() { held = current }
-    fun replay(index: Int) { held = frames.getOrNull(index) }
-    fun now() { held = null }
-    fun filtered(): List<StudioFlow> = current?.flows.orEmpty().filter {
-        (protocol == "全部" || it.protocol == protocol) &&
-            listOf(it.app, it.host, it.source, it.destination, it.route, it.rule).any { value -> value.contains(query, true) }
+    fun freeze() {
+        held = current
     }
+
+    fun replay(index: Int) {
+        held = frames.getOrNull(index)
+    }
+
+    fun now() {
+        held = null
+    }
+
+    fun filtered(): List<StudioFlow> = current?.flows.orEmpty().filter { flow ->
+        val matchesProtocol = protocol == "全部" || flow.protocol.equals(protocol, ignoreCase = true)
+        val matchesSource = when (sourceFilter) {
+            StudioSourceFilter.ALL -> true
+            StudioSourceFilter.DIRECT -> flow.routing == FlowRouting.DIRECT
+            StudioSourceFilter.PROXY -> flow.routing == FlowRouting.PROXY
+            StudioSourceFilter.OVERSEAS -> trafficRoute(flow.exitNode, overseasExits) == TrafficRoute.OVERSEAS
+            StudioSourceFilter.OTHER -> trafficRoute(flow.exitNode, overseasExits) == TrafficRoute.OTHER
+        }
+        val matchesQuery = query.isBlank() || listOf(
+            flow.app, flow.host, flow.source, flow.destination, flow.route, flow.rule
+        ).any { value -> value.contains(query, ignoreCase = true) }
+        matchesProtocol && matchesSource && matchesQuery
+    }
+
     fun graphFlows(): List<StudioFlow> {
         val matches = filtered()
         val selected = matches.firstOrNull { it.id == selectedId }
         return (listOfNotNull(selected) + matches.filter { it.id != selected?.id }).take(6)
     }
+
+    fun graphHostGroups(maxGroups: Int = 6): List<StudioHostGroup> {
+        val matches = filtered()
+        val groups = groupByHost(matches)
+        if (groups.size <= maxGroups) return groups
+        val displayed = groups.take(maxGroups).toMutableList()
+        val selectedGroup = groups.firstOrNull { group -> group.flows.any { it.id == selectedId } }
+        if (selectedGroup != null && displayed.none { it.key == selectedGroup.key }) {
+            displayed[maxGroups - 1] = selectedGroup
+        }
+        return displayed
+    }
+
+    fun rateHistory(upToCurrent: Boolean = true): Map<String, List<Rate?>> {
+        val slice = if (upToCurrent && held != null) {
+            val idx = frames.indexOf(held)
+            if (idx >= 0) frames.subList(0, idx + 1) else listOfNotNull(held)
+        } else {
+            frames
+        }
+        return computeRateHistory(slice)
+    }
+}
+
+fun groupByHost(flows: List<StudioFlow>): List<StudioHostGroup> {
+    val groups = LinkedHashMap<String, MutableList<StudioFlow>>()
+    val labels = LinkedHashMap<String, String>()
+    for (flow in flows) {
+        val key = flow.hostKey
+        groups.getOrPut(key) { ArrayList() }.add(flow)
+        labels.putIfAbsent(key, flow.host)
+    }
+    return groups.map { (key, members) ->
+        StudioHostGroup(key = key, label = labels.getValue(key), flows = members)
+    }
+}
+
+fun routePath(flow: StudioFlow): List<RouteNode> {
+    val nodes = ArrayList<RouteNode>()
+    nodes.add(RouteNode(RouteNodeKind.DEVICE, "手机", "${flow.app} · ${flow.source}"))
+    when (flow.routing) {
+        FlowRouting.PROXY -> {
+            // 控制器从出口向外追加策略组，展示时反向展开。 / Reverse leaf-first logical chain for display.
+            for (name in flow.chainList.reversed()) {
+                nodes.add(RouteNode(RouteNodeKind.ROUTE, name, "逻辑路由节点 · $name"))
+            }
+        }
+        FlowRouting.UNKNOWN -> {
+            nodes.add(RouteNode(RouteNodeKind.UNKNOWN, "路由待确认", "连接快照未提供代理路径"))
+        }
+        FlowRouting.DIRECT -> Unit
+    }
+    nodes.add(RouteNode(RouteNodeKind.SERVER, "服务器", "${flow.host} · ${flow.destination}"))
+    return nodes
+}
+
+fun computeRateHistory(frames: List<StudioFrame>): Map<String, List<Rate?>> {
+    if (frames.isEmpty()) return emptyMap()
+    val history = LinkedHashMap<String, Array<Rate?>>()
+    frames.forEachIndexed { index, frame ->
+        for (flow in frame.flows) {
+            if (flow.rx == null && flow.tx == null) continue
+            val series = history.getOrPut(flow.flowKey) { arrayOfNulls(frames.size) }
+            series[index] = Rate(flow.rx ?: 0.0, flow.tx ?: 0.0)
+        }
+    }
+    return history.mapValues { (_, arr) -> arr.toList() }
+}
+
+fun parseStudioFlow(item: JSONObject): StudioFlow {
+    val metadata = item.optJSONObject("metadata") ?: JSONObject()
+    fun value(camel: String, snake: String = camel) =
+        metadata.optString(camel).ifBlank { metadata.optString(snake) }
+    val host = value("host").ifBlank { value("destinationIP", "destination_ip").ifBlank { "未知目标" } }
+    val chains = item.optJSONArray("chains")
+    val chainText = (0 until (chains?.length() ?: 0))
+        .map { chains!!.optString(it) }
+        .filter { it.isNotBlank() }
+        .joinToString(" → ")
+        .ifBlank { "未知" }
+    val process = value("process").ifBlank { value("type").ifBlank { "未知应用" } }
+    return StudioFlow(
+        id = item.optString("id"),
+        start = item.optString("start"),
+        app = process,
+        host = host,
+        source = studioEndpoint(value("sourceIP", "source_ip"), value("sourcePort", "source_port")),
+        destination = studioEndpoint(
+            value("destinationIP", "destination_ip").ifBlank { host },
+            value("destinationPort", "destination_port")
+        ),
+        protocol = value("network").uppercase(Locale.ROOT).ifBlank { "未知" },
+        route = chainText,
+        rule = listOf(item.optString("rule"), item.optString("rulePayload"))
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+            .ifBlank { "未知" },
+        download = item.optLong("download", -1),
+        upload = item.optLong("upload", -1),
+        raw = item.toString()
+    )
 }
 
 fun studioEndpoint(host: String, port: String): String {
@@ -68,6 +291,20 @@ fun studioEndpoint(host: String, port: String): String {
     val formatted = if (address.contains(':') && !address.startsWith('[')) "[$address]" else address
     return "$formatted:${port.toIntOrNull()?.takeIf { it in 0..65535 } ?: "?"}"
 }
+
+fun formatBytes(value: Double): String {
+    if (!value.isFinite() || value < 0) return "—"
+    val units = arrayOf("B", "KB", "MB", "GB", "TB")
+    var n = value
+    var i = 0
+    while (n >= 1024 && i < units.lastIndex) {
+        n /= 1024
+        i++
+    }
+    return if (i == 0) "${n.toLong()} ${units[i]}" else String.format(Locale.ROOT, "%.1f %s", n, units[i])
+}
+
+fun formatRate(value: Double?): String = value?.let { "${formatBytes(it)}/s" } ?: "—"
 
 fun studioDemo(tick: Int): List<StudioFlow> {
     val apps = listOf("Browser", "Browser", "Cloud Sync", "System", "System")
@@ -82,8 +319,10 @@ fun studioDemo(tick: Int): List<StudioFlow> {
         val down = 800000 + i * 250000 + tick * downloads[i]
         val up = 40000 + tick * uploads[i]
         val raw = """{"id":"demo-$i","start":"demo-start","metadata":{"process":"${apps[i]}","host":"${hosts[i]}","sourceIP":"192.0.2.2","sourcePort":${51000 + i},"destinationIP":"${ips[i]}","destinationPort":$port,"network":"$network"},"chains":["$route"],"rule":"Demo","download":$down,"upload":$up}"""
-        StudioFlow("demo-$i", "demo-start", apps[i], hosts[i], "192.0.2.2:${51000 + i}",
+        StudioFlow(
+            "demo-$i", "demo-start", apps[i], hosts[i], "192.0.2.2:${51000 + i}",
             "${ips[i]}:$port", network, route, "Demo", down, up, raw,
-            event = if (i == 1 && tick >= 18) "演示事件：TLS 握手超时\n场景脚本 · 请求 #18 · 超时阈值 3 秒" else null)
+            event = if (i == 1 && tick >= 18) "演示事件：TLS 握手超时\n场景脚本 · 请求 #18 · 超时阈值 3 秒" else null
+        )
     }
 }

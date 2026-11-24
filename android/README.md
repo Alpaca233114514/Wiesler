@@ -1,14 +1,14 @@
 # Wiesler Android
 
-Kotlin 原生 Android 客户端，观察手机自己的网络，最低 Android 11。不启用 VpnService，不替换或修改手机现有代理。
+Kotlin 原生 Jetpack Compose + Material 3 Expressive Android 客户端，观察手机自己的网络，最低 Android 11（API 30）。不启用 VpnService，不替换或修改手机现有代理。
 
-## 功能
+## 功能（Material 3 Expressive + PC 同步）
 
-- 图谱：沿用桌面工作台的深蓝与薄荷绿界面，默认实时连接；已有已启用控制器时沿用保存的连接设置。支持本地演示、节点拖动、画布平移、双指与按钮缩放、搜索与协议筛选。点击节点、连线或会话卡片打开底部检查器，查看概览、事件及原始 JSON。冻结不停止采集，时间条回放本次 Activity 的最近 60 个快照。详见[移动图谱实现与验证](../docs/android-studio-20261102.md)。
-- 概览：全局流量与海外转发流量两张图，各有独立开关，显示下载 / 上传速率和最近 60 次采样；全局使用 Android TrafficStats，海外转发使用指定 Mihomo 出口的连接增量。
-- 应用：用户在系统界面授予使用情况访问后，读取今天零点至今的 NetworkStatsManager 统计，按 UID 聚合 Wi-Fi 与移动数据；无法解析应用名称时保留 UID。
-- 连接：可选接入手机 Mihomo HTTP 控制器，读取 `/connections`，支持搜索目标、端口、应用和规则，提供 TCP / UDP、直连 / 海外转发 / 其他筛选。列表显示目标地址、源端口 → 目标端口、源地址和实际出口；详情补充目标 IP，IPv6 地址使用方括号区分端口，缺失端口显示未知。不开启控制器时不生成模拟连接。
-- 诊断：当前接口、地址、DNS、Private DNS、MTU、系统网络验证；用户主动点击后检查一次 HTTPS 请求，支持系统分享报告。
+- **图谱**：采用 Material 3 Expressive 界面与弹簧动效（`MaterialExpressiveTheme` / `MotionScheme.expressive()`），默认实时连接。同步 PC 桌面端能力：顶部双路公网出口对比卡（系统路由 vs 代理路由 IP、国家/城市/ISP 与是否分流）、暂停采集/冻结独立控制、同域名不同端口自动堆叠节点与检查器内切换、细线逻辑路由路径条（手机 → 策略组 → 出口 → 服务器）、逐连接 60 帧速率微折线、可开关实时脉冲粒子、来源筛选（全部 / DIRECT 直连 / 代理转发 / 海外出口 / 其他）与协议筛选，以及最近 60 帧时间条回放与本地演示模式。
+- **监测**：同步 PC 运行监测的 Mihomo 总览指标与渐变面积趋势图，保留 Android 独有的全局流量（`TrafficStats`）、海外转发流量（指定 `chains[0]` 出口差分）、今日应用流量排行（`NetworkStatsManager` + 波浪进度条）与 ICMP 丢包/平均 RTT 监控，并展示最近 100 条控制器/HTTPS 请求日志。
+- **隐私**：同步 PC 隐私与 DNS 核查能力。支持一键并发执行「主动网络检查」（读取 Android `LinkProperties` 系统 DNS、Private DNS 状态、实测 `example.com` 解析耗时、双路公网出口对比、本机与出口时区偏移对比）、连接快照核查（53 端口线索、全代理预期策略、可配置上传速率告警阈值与可展开连接证据）、系统网络快照与按需 HTTPS 204 探测、设备环境暴露面自检，以及通过 SplitButton 分享文本报告或导出/分享结构化 JSON 隐私证据。明确标注平台边界：Android 非 root 且不接管 VPN，无法抓取他应用明文 DNS 底层报文。
+- **历史**：同步 PC 历史会话诊断能力。通过系统文件选择器（SAF）只读打开 Wiesler CLI 生成的 `.sqlite3` / `.db` 证据库，校验 `WISL` 应用标识与 schema v1，列出历史会话并在手机端直接生成与分享 Markdown 诊断报告。
+- **设置**：支持并发扫描本机回环常见 Mihomo 控制器端口（严格校验 `/version` 与 `/connections`，扫描不携带密钥）、手动配置控制器与 Keystore AES-GCM 加密 Secret、管理海外出口节点、开关图谱脉冲动效，以及切换 Material 3 Expressive 深色/浅色/跟随系统配色与 Android 12+ Material You 动态取色。
 
 ## 数据边界
 
@@ -60,9 +60,10 @@ adb shell am start -n io.wiesler.android/.MainActivity
 开发前检查了 GitHub 上的 Mihomo / Android 相关项目；本客户端 UI、采样和控制器实现为原创，没有复制这些项目代码或嵌入代理内核。
 
 - Gradle Wrapper JAR：来自本机既有 Gradle wrapper；上游 [Gradle](https://github.com/gradle/gradle)，Apache-2.0，版权 Gradle 原作者与贡献者。完整许可见仓库根目录 `LICENSE`。Wrapper 仅用于构建，不打入 APK。
-- Kotlin 标准库 2.2.20：[JetBrains/kotlin](https://github.com/JetBrains/kotlin/tree/v2.2.20)，Apache-2.0。随 APK 打包，`assets/NOTICE.txt` 和 `assets/LICENSE-Apache-2.0.txt` 包含来源与许可。
+- Kotlin 标准库与 Compose 编译器插件 2.2.20：[JetBrains/kotlin](https://github.com/JetBrains/kotlin/tree/v2.2.20)，Apache-2.0。随 APK 打包，`assets/NOTICE.txt` 和 `assets/LICENSE-Apache-2.0.txt` 包含来源与许可。
+- AndroidX Jetpack Compose（BOM 2026.06.01，含 `ui`、`foundation`、`animation`、`material-icons-extended:1.7.8`）、`androidx.compose.material3:material3:1.5.0-alpha16` 与 `androidx.activity:activity-compose:1.13.0`：Google 官方 AndroidX（Apache-2.0），通过 `app/gradle.lockfile` 锁定全部传递依赖版本。
 - AGP 8.13.2：Google 官方 Android 构建插件，Apache-2.0；编译、资源处理、DEX 和 debug 签名，无自定义安装脚本。
-- JUnit 4.13.2：EPL-1.0，仅本地单元测试，不打入 APK。
+- JUnit 4.13.2（EPL-1.0）与 `org.json:json:20250517`（Public Domain）：仅本地 JVM 单元测试，不打入 APK。
 
 API 口径核对：[TrafficStats](https://developer.android.com/reference/android/net/TrafficStats)、[NetworkStatsManager](https://developer.android.com/reference/android/app/usage/NetworkStatsManager)。
 

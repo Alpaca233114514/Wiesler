@@ -91,3 +91,41 @@ class ControllerSecretStore(private val prefs: SharedPreferences, private val al
         return String(cipher.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), Charsets.UTF_8)
     }
 }
+
+enum class ThemePreference(val code: String, val label: String) {
+    SYSTEM("system", "跟随系统"),
+    DARK("dark", "深色"),
+    LIGHT("light", "浅色");
+
+    companion object {
+        fun fromCode(code: String?): ThemePreference = entries.firstOrNull { it.code == code } ?: DARK
+    }
+}
+
+data class AppUiPreferences(
+    val pulseAnimation: Boolean = true,
+    val expectProxy: Boolean = false,
+    val uploadThresholdKib: Int = 1024,
+    val dynamicColor: Boolean = false,
+    val themeMode: ThemePreference = ThemePreference.DARK
+)
+
+object AppUiPreferencesStore {
+    fun read(prefs: SharedPreferences): AppUiPreferences = AppUiPreferences(
+        pulseAnimation = prefs.getBoolean("ui_pulse_animation", true),
+        expectProxy = prefs.getBoolean("privacy_expect_proxy", false),
+        uploadThresholdKib = prefs.getInt("privacy_upload_threshold_kib", 1024).coerceIn(1, 1_048_576),
+        dynamicColor = prefs.getBoolean("ui_dynamic_color", false),
+        themeMode = ThemePreference.fromCode(prefs.getString("ui_theme_mode", ThemePreference.DARK.code))
+    )
+
+    fun write(prefs: SharedPreferences, value: AppUiPreferences) {
+        prefs.edit()
+            .putBoolean("ui_pulse_animation", value.pulseAnimation)
+            .putBoolean("privacy_expect_proxy", value.expectProxy)
+            .putInt("privacy_upload_threshold_kib", value.uploadThresholdKib.coerceIn(1, 1_048_576))
+            .putBoolean("ui_dynamic_color", value.dynamicColor)
+            .putString("ui_theme_mode", value.themeMode.code)
+            .apply()
+    }
+}
