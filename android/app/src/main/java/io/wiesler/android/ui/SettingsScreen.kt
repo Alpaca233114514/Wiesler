@@ -139,7 +139,11 @@ fun SettingsScreen(
                         Text("断开连接并清除保存的 Secret")
                     }
                 }
-                Text(state.discoveryStatus, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    text = state.discoveryStatus,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (state.discoveryFailed) semantic.danger else MaterialTheme.colorScheme.onSurfaceVariant
+                )
 
                 if (state.discoveredControllers.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -52,18 +52,36 @@ data class EgressUiState(
     val proxyError: String? = null
 )
 
+enum class BannerTone {
+    ERROR,
+    WARNING,
+    SUCCESS,
+    INFO
+}
+
+data class TopBannerMessage(
+    val id: Long,
+    val title: String,
+    val detail: String? = null,
+    val tone: BannerTone = BannerTone.ERROR,
+    val durationMs: Long = 4500L
+)
+
 data class WieslerUiState(
     val activeTab: WieslerTab = WieslerTab.GRAPH,
     val preferences: AppUiPreferences = AppUiPreferences(),
+    val topBanner: TopBannerMessage? = null,
     // Controller & Capture
     val controllerAddress: String = "http://127.0.0.1:9090",
     val controllerEnabled: Boolean = false,
+    val controllerHealthy: Boolean = false,
     val hasSecret: Boolean = false,
     val connectionState: String = "尚未连接手机控制器",
     val capturePaused: Boolean = false,
     val discoveringControllers: Boolean = false,
     val discoveredControllers: List<DiscoveredController> = emptyList(),
-    val discoveryStatus: String = "点击扫描本机回环 Mihomo 控制器",
+    val discoveryStatus: String = "点击扫描本机回环 Clash / Mihomo / sing-box 控制器",
+    val discoveryFailed: Boolean = false,
     // Graph & Studio
     val studioLive: Boolean = true,
     val studioFrozen: Boolean = false,

@@ -14,6 +14,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -23,8 +24,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import io.wiesler.android.ui.AppUsageEntry
+import io.wiesler.android.ui.BannerTone
 import io.wiesler.android.ui.EgressUiState
 import io.wiesler.android.ui.PacketLossUiState
+import io.wiesler.android.ui.TopBannerMessage
 import io.wiesler.android.ui.WieslerActions
 import io.wiesler.android.ui.WieslerAppShell
 import io.wiesler.android.ui.WieslerExpressiveTheme
@@ -65,8 +68,13 @@ class MainActivity : ComponentActivity() {
     private var controller = "http://127.0.0.1:9090"
     private var secret = ""
     private var controllerEnabled = false
-    private var controllerBusy = false
+    private var controllerHealthy = false
+    private var inFlightControllerGeneration: Int? = null
+    private val controllerBusy: Boolean get() = inFlightControllerGeneration == controllerGeneration
     private var controllerGeneration = 0
+    private var notifyNextControllerSuccess = false
+    private var notifyNextControllerError = false
+    private var bannerSeq = 0L
     private var connectionState = "尚未连接手机控制器"
     private var availableExitsCache = emptyList<String>()
     private var lastRate: Rate? = null
@@ -132,10 +140,13 @@ class MainActivity : ComponentActivity() {
         controllerEnabled = prefs.getBoolean("controllerEnabled", prefs.contains("controller"))
         secret = runCatching { ControllerSecretStore(prefs).read(controller) }.getOrElse {
             controllerEnabled = false
-            Toast.makeText(this, "无法解密控制器密钥，请重新配置", Toast.LENGTH_LONG).show()
+            showTopBanner("无法解密控制器密钥", "Keystore 密钥不可用，请重新配置", BannerTone.ERROR, durationMs = 5500L)
             ""
         }
-        if (controllerEnabled) connectionState = "等待重新连接"
+        if (controllerEnabled) {
+            connectionState = "等待重新连接"
+            notifyNextControllerError = true
+        }
         prefs.getString("history", null)?.let { stored ->
             runCatching { SavedHistory.decode(stored) }.onSuccess { history ->
                 trend.addAll(history.trend)
@@ -358,8 +369,31 @@ class MainActivity : ComponentActivity() {
         onToggleDynamicColor = { enabled -> updatePrefs(uiPrefs.copy(dynamicColor = enabled)) },
         onSetControllerDialog = { open -> uiState = uiState.copy(showControllerDialog = open) },
         onSetExitsDialog = { open -> uiState = uiState.copy(showExitsDialog = open) },
-        onSetScopeDialog = { open -> uiState = uiState.copy(showScopeDialog = open) }
+        onSetScopeDialog = { open -> uiState = uiState.copy(showScopeDialog = open) },
+        onDismissBanner = { id -> dismissTopBanner(id) }
     )
+
+    private fun showTopBanner(
+        title: String,
+        detail: String? = null,
+        tone: BannerTone = BannerTone.ERROR,
+        durationMs: Long = 4500L
+    ) {
+        val msg = TopBannerMessage(
+            id = ++bannerSeq,
+            title = title,
+            detail = detail,
+            tone = tone,
+            durationMs = durationMs
+        )
+        uiState = uiState.copy(topBanner = msg)
+    }
+
+    private fun dismissTopBanner(id: Long) {
+        if (uiState.topBanner?.id == id) {
+            uiState = uiState.copy(topBanner = null)
+        }
+    }
 
     private val tick = object : Runnable {
         override fun run() {
@@ -460,13 +494,23 @@ class MainActivity : ComponentActivity() {
         val effectiveSecret = if (enteredSecret.isEmpty() && !changedController) secret else enteredSecret
         val saved = runCatching {
             ControllerSecretStore(getPreferences(0)).save(address, effectiveSecret, true)
+        }.onFailure { err ->
+            Log.w("Wiesler", "Failed to persist controller secret for $address: ${err.javaClass.simpleName}: ${err.message}")
         }.getOrDefault(false)
-        if (!saved) return "无法安全保存连接设置，请重试"
+        if (!saved) {
+            showTopBanner("保存控制器设置失败", "Keystore 写入异常，请重试", BannerTone.ERROR)
+            return "无法安全保存连接设置，请重试"
+        }
         controller = address
         secret = effectiveSecret
         controllerEnabled = true
+        controllerHealthy = false
         capturePaused = false
+        // 递增代际立即解除旧地址在途请求的阻塞，保证新地址立刻发起拉取并汇报结果。
+        // Bumping generation immediately unblocks a new fetch even if a stale request is still timing out.
         controllerGeneration++
+        notifyNextControllerSuccess = true
+        notifyNextControllerError = true
         if (studio.live) {
             studio.switchSource(false)
             studio.switchSource(true)
@@ -484,18 +528,21 @@ class MainActivity : ComponentActivity() {
         connectionState = "连接中…"
         persistState()
         publishUiState()
-        if (!controllerBusy) fetchConnections()
+        fetchConnections()
         refreshEgress()
         return null
     }
 
     private fun disconnectController() {
         if (!runCatching { ControllerSecretStore(getPreferences(0)).save(controller, "", false) }.getOrDefault(false)) {
-            Toast.makeText(this, "断开设置保存失败，请重试", Toast.LENGTH_LONG).show()
+            showTopBanner("断开设置保存失败", "无法清除本地凭证，请重试", BannerTone.ERROR)
             return
         }
         controllerGeneration++
         controllerEnabled = false
+        controllerHealthy = false
+        notifyNextControllerSuccess = false
+        notifyNextControllerError = false
         secret = ""
         availableExitsCache = emptyList()
         connectionState = "已断开"
@@ -522,21 +569,40 @@ class MainActivity : ComponentActivity() {
 
     private fun scanLocalControllers() {
         if (uiState.discoveringControllers) return
-        uiState = uiState.copy(discoveringControllers = true, discoveryStatus = "正在并发扫描回环端口…")
+        uiState = uiState.copy(
+            discoveringControllers = true,
+            discoveryFailed = false,
+            discoveryStatus = "正在并发扫描 ${ControllerDiscovery.DEFAULT_PORTS.size} 个常用回环端口…"
+        )
         val extras = listOf(controller)
         worker.execute {
             val report = ControllerDiscovery.scanLocal(extras)
             handler.post {
                 if (isDestroyed) return@post
+                val failed = report.controllers.isEmpty()
                 val msg = when {
-                    report.controllers.isEmpty() -> "已扫描 ${report.scannedPorts} 个本机端口，未发现可用 Mihomo 控制器"
+                    failed -> report.failureSummary()
                     report.controllers.size == 1 -> "发现 1 个控制器（扫描 ${report.scannedPorts} 端口），可点击右侧直接连接"
                     else -> "发现 ${report.controllers.size} 个控制器，请选择其中一个连接"
+                }
+                if (failed) {
+                    Log.w("Wiesler", "Local controller scan found none (${report.scannedPorts} ports): $msg")
+                    appendRequestLog("本机端口扫描 (${report.scannedPorts})", null, msg)
+                    showTopBanner("未发现可用本机控制器", msg, BannerTone.ERROR, durationMs = 5500L)
+                } else {
+                    val foundList = report.controllers.joinToString("、") { it.address.removePrefix("http://") }
+                    showTopBanner(
+                        title = "发现 ${report.controllers.size} 个本机控制器",
+                        detail = foundList,
+                        tone = BannerTone.SUCCESS,
+                        durationMs = 3600L
+                    )
                 }
                 uiState = uiState.copy(
                     discoveringControllers = false,
                     discoveredControllers = report.controllers,
-                    discoveryStatus = msg
+                    discoveryStatus = msg,
+                    discoveryFailed = failed
                 )
             }
         }
@@ -552,8 +618,8 @@ class MainActivity : ComponentActivity() {
 
     private fun fetchConnections() {
         if (!foreground || !controllerEnabled || controllerBusy || capturePaused) return
-        controllerBusy = true
         val generation = controllerGeneration
+        inFlightControllerGeneration = generation
         val address = controller
         val token = secret
         worker.execute {
@@ -613,10 +679,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
             handler.post {
-                controllerBusy = false
+                if (inFlightControllerGeneration == generation) inFlightControllerGeneration = null
                 if (isDestroyed || !foreground || generation != controllerGeneration) return@post
                 result.fold(
                     onSuccess = { snapshot ->
+                        controllerHealthy = true
                         availableExitsCache = snapshot.exits
                         if (studio.live) {
                             studio.accept(
@@ -633,6 +700,18 @@ class MainActivity : ComponentActivity() {
                         forwardSampledAt = sampleDateFmt.format(Date())
                         connectionState = "已连接 · HTTP $httpStatus · ${snapshot.flows.size} 条连接 · $forwardSampledAt"
                         appendRequestLog("Mihomo /connections", httpStatus, null)
+                        if (notifyNextControllerSuccess) {
+                            notifyNextControllerSuccess = false
+                            notifyNextControllerError = false
+                            showTopBanner(
+                                title = "控制器已连接",
+                                detail = "${address.removePrefix("http://")} · 当前 ${snapshot.flows.size} 条活跃连接",
+                                tone = BannerTone.SUCCESS,
+                                durationMs = 3200L
+                            )
+                        } else {
+                            notifyNextControllerError = false
+                        }
                         if (forwardEnabled) {
                             forwardRate = forwardRates.accept(snapshot.time, snapshot.counters, overseasExits)
                             appendSample(forwardTrend, forwardRate)
@@ -646,15 +725,28 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onFailure = { err ->
+                        val wasHealthy = controllerHealthy
+                        controllerHealthy = false
                         availableExitsCache = emptyList()
                         val rawMessage = when (err) {
                             is java.net.ConnectException -> "无法连接，请确认手机控制器已开启"
                             is java.net.SocketTimeoutException -> "连接超时，正在重试"
                             is IllegalStateException -> err.message ?: "快照无效"
-                            else -> "读取失败，请检查地址、网络与证书"
+                            else -> "读取失败：${err.message?.take(60) ?: "请检查地址、网络与证书"}"
                         }
+                        Log.w("Wiesler", "Controller /connections failed ($address, http=$httpStatus): ${err.javaClass.simpleName}: ${err.message}")
                         appendRequestLog("Mihomo /connections", httpStatus, rawMessage)
                         connectionState = "${httpStatus?.let { "HTTP $it" } ?: "未取得状态码"} · $rawMessage"
+                        if (notifyNextControllerError || wasHealthy) {
+                            notifyNextControllerSuccess = false
+                            notifyNextControllerError = false
+                            showTopBanner(
+                                title = "控制器连接失败",
+                                detail = "${address.removePrefix("http://")} · $rawMessage",
+                                tone = BannerTone.ERROR,
+                                durationMs = 5000L
+                            )
+                        }
                         appendSample(mihomoTrend, null)
                         if (studio.live) {
                             studio.accept(emptyList(), SystemClock.elapsedRealtime(), System.currentTimeMillis(), connectionState)
@@ -1078,6 +1170,7 @@ class MainActivity : ComponentActivity() {
             preferences = uiPrefs,
             controllerAddress = controller,
             controllerEnabled = controllerEnabled,
+            controllerHealthy = controllerHealthy,
             hasSecret = secret.isNotEmpty(),
             connectionState = connectionState,
             capturePaused = capturePaused,

@@ -24,13 +24,26 @@ class PcSyncModulesTest {
     }
 
     @Test fun controllerDiscoveryValidatesBothEndpointsAndLoopbackOnly() {
+        assertTrue(ControllerDiscovery.DEFAULT_PORTS.containsAll(listOf(9090, 9097, 12440, 16756, 19090, 6170, 20122)))
         assertTrue(ControllerDiscovery.isLoopbackHttp("http://127.0.0.1:9090"))
         assertTrue(ControllerDiscovery.isLoopbackHttp("http://localhost:9097"))
+        assertTrue(ControllerDiscovery.isLoopbackHttp("HTTP://127.0.0.1:12440"))
         assertFalse(ControllerDiscovery.isLoopbackHttp("http://192.168.1.1:9090"))
         assertFalse(ControllerDiscovery.isLoopbackHttp("https://127.0.0.1:9090"))
 
+        assertEquals("http://127.0.0.1:12440", ControllerDiscovery.normalizeControllerAddress("127.0.0.1:12440").getOrThrow())
+        assertEquals("http://localhost:9090", ControllerDiscovery.normalizeControllerAddress("localhost:9090/").getOrThrow())
+        assertEquals("http://127.0.0.1:9097", ControllerDiscovery.normalizeControllerAddress("HTTP://127.0.0.1:9097").getOrThrow())
+        assertEquals("https://ctrl.example.com:9090", ControllerDiscovery.normalizeControllerAddress("https://ctrl.example.com:9090").getOrThrow())
+        assertTrue(ControllerDiscovery.normalizeControllerAddress("http://192.168.1.1:9090").isFailure)
+        assertTrue(ControllerDiscovery.normalizeControllerAddress("http://127.0.0.1:9090/ui").isFailure)
+        assertTrue(ControllerDiscovery.normalizeControllerAddress("0.0.0.0:12440").exceptionOrNull()?.message?.contains("127.0.0.1") == true)
+        assertTrue(ControllerDiscovery.normalizeControllerAddress("127.0.0.1:99999").isFailure)
+
         val verOk = ControllerDiscovery.parseVersionResponse(200, """{"version":"v1.19.32"}""")
         assertTrue(verOk.isMihomo && verOk.version == "v1.19.32" && !verOk.authRequired)
+        val verSingBox = ControllerDiscovery.parseVersionResponse(200, """{"meta":true,"premium":true,"version":"sing-box 1.13.14"}""")
+        assertTrue(verSingBox.isMihomo && verSingBox.version == "sing-box 1.13.14")
         val verAuth = ControllerDiscovery.parseVersionResponse(401, "unauthorized")
         assertTrue(verAuth.isMihomo && verAuth.authRequired)
         assertFalse(ControllerDiscovery.parseVersionResponse(400, "proxy port").isMihomo)
@@ -43,6 +56,12 @@ class PcSyncModulesTest {
             truncated = true
         )
         assertTrue(connTruncated.isMihomo && connTruncated.ready)
+        val connSingBoxTruncated = ControllerDiscovery.parseConnectionsResponse(
+            200,
+            """{"connections":[{"chains":["direct"],"download":262,"id":"abc","metadata":{"destinationIP":"1.1.1.1","host":""},"rule":"final"""",
+            truncated = true
+        )
+        assertTrue(connSingBoxTruncated.isMihomo && connSingBoxTruncated.ready)
         val connTruncatedBogus = ControllerDiscovery.parseConnectionsResponse(
             200,
             """{"ok":true,"items":[1,2,3""",
@@ -51,6 +70,17 @@ class PcSyncModulesTest {
         assertFalse(connTruncatedBogus.isMihomo)
         val connGeneric = ControllerDiscovery.parseConnectionsResponse(200, """{"ok":true}""")
         assertFalse(connGeneric.isMihomo)
+
+        val emptyReport = ControllerDiscoveryReport(
+            controllers = emptyList(),
+            scannedPorts = 15,
+            diagnostics = listOf(
+                ProbeDiagnostic("http://127.0.0.1:9090", "连接被拒绝", ProbeFailureKind.REFUSED),
+                ProbeDiagnostic("http://127.0.0.1:12440", "连接或读取超时", ProbeFailureKind.TIMEOUT)
+            )
+        )
+        val summary = emptyReport.failureSummary()
+        assertTrue(summary.contains("15") && summary.contains("1 个未监听/拒绝") && summary.contains("1 个超时"))
     }
 
     @Test fun studioHostGroupingRoutePathAndRateHistoryMatchPc() {

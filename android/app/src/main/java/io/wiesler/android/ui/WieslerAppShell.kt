@@ -1,10 +1,16 @@
 package io.wiesler.android.ui
 
 import android.os.Build
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -26,6 +32,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -34,24 +41,32 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Hub
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.MonitorHeart
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -90,18 +105,21 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import io.wiesler.android.ControllerDiscovery
 import io.wiesler.android.DiscoveredController
 import io.wiesler.android.R
 import io.wiesler.android.StoredSession
 import io.wiesler.android.StudioSourceFilter
 import io.wiesler.android.ThemePreference
 import io.wiesler.android.eligibleExit
-import java.net.URI
+import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -147,7 +165,8 @@ data class WieslerActions(
     val onToggleDynamicColor: (Boolean) -> Unit,
     val onSetControllerDialog: (Boolean) -> Unit,
     val onSetExitsDialog: (Boolean) -> Unit,
-    val onSetScopeDialog: (Boolean) -> Unit
+    val onSetScopeDialog: (Boolean) -> Unit,
+    val onDismissBanner: (Long) -> Unit
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -219,17 +238,25 @@ fun WieslerAppShell(
                             }
                         },
                         actions = {
-                            val liveOk = state.controllerEnabled && !state.capturePaused
+                            val liveOk = state.controllerEnabled && state.controllerHealthy && !state.capturePaused
+                            val connErr = state.controllerEnabled && !state.controllerHealthy && !state.capturePaused
                             StatusPill(
                                 text = when {
                                     state.capturePaused -> "已暂停"
-                                    state.controllerEnabled -> "Mihomo 实时"
+                                    liveOk -> "Mihomo 实时"
+                                    connErr -> "连接异常"
                                     else -> "仅本机观测"
                                 },
-                                containerColor = if (liveOk) semantic.download.copy(alpha = 0.16f)
-                                else MaterialTheme.colorScheme.surfaceContainerHigh,
-                                contentColor = if (liveOk) semantic.download
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                containerColor = when {
+                                    liveOk -> semantic.download.copy(alpha = 0.16f)
+                                    connErr -> semantic.danger.copy(alpha = 0.16f)
+                                    else -> MaterialTheme.colorScheme.surfaceContainerHigh
+                                },
+                                contentColor = when {
+                                    liveOk -> semantic.download
+                                    connErr -> semantic.danger
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
                                 modifier = Modifier.padding(end = 12.dp)
                             )
                         }
@@ -322,6 +349,15 @@ fun WieslerAppShell(
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(horizontal = 24.dp, vertical = 14.dp)
+        )
+
+        TopAlertBannerHost(
+            banner = state.topBanner,
+            onDismiss = actions.onDismissBanner,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(horizontal = 14.dp, vertical = 8.dp)
         )
     }
 
@@ -606,6 +642,105 @@ private fun FloatingGlassNavBar(
 }
 
 @Composable
+private fun TopAlertBannerHost(
+    banner: TopBannerMessage?,
+    onDismiss: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // 保留最后一条横幅内容，确保收起动画期间不瞬间变空闪烁。
+    // Keep the last banner payload during exit animation to avoid blank flashes.
+    var lastBanner by remember { mutableStateOf(banner) }
+    if (banner != null) lastBanner = banner
+
+    LaunchedEffect(banner?.id) {
+        if (banner != null) {
+            delay(banner.durationMs)
+            onDismiss(banner.id)
+        }
+    }
+
+    AnimatedVisibility(
+        visible = banner != null,
+        enter = slideInVertically(initialOffsetY = { -it - 24 }) + fadeIn(),
+        exit = slideOutVertically(targetOffsetY = { -it - 24 }) + fadeOut(),
+        modifier = modifier
+    ) {
+        val active = lastBanner ?: return@AnimatedVisibility
+        val semantic = LocalWieslerColors.current
+        val isDark = LocalIsDarkTheme.current
+        val (accent, icon) = when (active.tone) {
+            BannerTone.ERROR -> semantic.danger to Icons.Rounded.ErrorOutline
+            BannerTone.WARNING -> semantic.warning to Icons.Rounded.WarningAmber
+            BannerTone.SUCCESS -> semantic.success to Icons.Rounded.CheckCircle
+            BannerTone.INFO -> MaterialTheme.colorScheme.primary to Icons.Rounded.Info
+        }
+        val surfaceColor = if (isDark) Color(0xFF1F1F22) else Color(0xFFFDFDFE)
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = surfaceColor,
+            shadowElevation = 10.dp,
+            border = BorderStroke(1.dp, accent.copy(alpha = if (isDark) 0.55f else 0.42f)),
+            modifier = Modifier
+                .widthIn(max = 520.dp)
+                .fillMaxWidth()
+                .clickable { onDismiss(active.id) }
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 14.dp, end = 6.dp, top = 11.dp, bottom = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(accent.copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = accent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = active.title,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (!active.detail.isNullOrBlank()) {
+                        Text(
+                            text = active.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = { onDismiss(active.id) },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "关闭提示",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ControllerConfigDialog(
     initialAddress: String,
     hasExistingSecret: Boolean,
@@ -613,17 +748,46 @@ private fun ControllerConfigDialog(
     onDisconnect: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val semantic = LocalWieslerColors.current
     var address by remember(initialAddress) { mutableStateOf(initialAddress) }
     var secret by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("连接手机 Mihomo 控制器") },
+        title = { Text("连接手机控制器") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (errorMessage != null) {
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = semantic.danger.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, semantic.danger.copy(alpha = 0.45f))
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ErrorOutline,
+                                contentDescription = null,
+                                tint = semantic.danger,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = errorMessage!!,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = semantic.danger
+                            )
+                        }
+                    }
+                }
                 Text(
-                    "填写 Clash Meta / Mihomo 的 External Controller 地址。明文 HTTP 仅允许本机回环地址，远程地址必须使用 HTTPS。",
+                    "填写 Clash / Mihomo / sing-box 的 External Controller 地址。本机回环地址可直接填 127.0.0.1:端口（自动补全 http://），远程地址必须使用 HTTPS。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -631,7 +795,8 @@ private fun ControllerConfigDialog(
                     value = address,
                     onValueChange = { address = it; errorMessage = null },
                     label = { Text("控制器根地址") },
-                    placeholder = { Text("http://127.0.0.1:9090") },
+                    placeholder = { Text("127.0.0.1:9090 或 127.0.0.1:12440") },
+                    isError = errorMessage != null,
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     modifier = Modifier.fillMaxWidth()
@@ -644,24 +809,17 @@ private fun ControllerConfigDialog(
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth()
                 )
-                if (errorMessage != null) {
-                    Text(errorMessage!!, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
-                }
             }
         },
         confirmButton = {
             TextButton(
                 onClick = {
-                    val value = address.trim().trimEnd('/')
-                    val uri = runCatching { URI(value) }.getOrNull()
-                    val loopback = uri?.host in listOf("127.0.0.1", "localhost", "[::1]")
-                    if (uri == null || uri.host == null || uri.userInfo != null || uri.query != null ||
-                        uri.fragment != null || !uri.path.isNullOrEmpty() ||
-                        (uri.scheme != "https" && !(uri.scheme == "http" && loopback))
-                    ) {
-                        errorMessage = "请使用本机 HTTP 或 HTTPS 根地址，不包含路径与密钥"
+                    val normalized = ControllerDiscovery.normalizeControllerAddress(address)
+                    val value = normalized.getOrElse { err ->
+                        errorMessage = err.message ?: "控制器地址格式无效"
                         return@TextButton
                     }
+                    address = value
                     errorMessage = onSave(value, secret)
                 }
             ) { Text("连接") }
@@ -775,7 +933,7 @@ fun WieslerPreview() {
                 onSaveController = { _, _ -> null }, onDisconnectController = {},
                 onSaveExits = {}, onTogglePulseAnimation = {}, onChangeThemeMode = {},
                 onToggleDynamicColor = {}, onSetControllerDialog = {}, onSetExitsDialog = {},
-                onSetScopeDialog = {}
+                onSetScopeDialog = {}, onDismissBanner = {}
             )
         )
     }
