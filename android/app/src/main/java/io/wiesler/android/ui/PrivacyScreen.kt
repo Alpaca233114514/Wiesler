@@ -86,9 +86,10 @@ fun PrivacyScreen(
     }
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.ROOT) }
 
+    val bottomClearance = LocalBottomBarClearance.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp + bottomClearance),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item(key = "header") {
@@ -268,14 +269,20 @@ fun PrivacyScreen(
             ExpressiveSectionCard {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         Icon(Icons.Rounded.PhoneAndroid, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         Text("设备运行环境暴露面自检", style = MaterialTheme.typography.titleLarge)
                     }
-                    FilledTonalButton(onClick = onRunEnvironmentCheck) { Text("本地自检") }
+                    FilledTonalButton(onClick = onRunEnvironmentCheck) {
+                        Text("本地自检", maxLines = 1, softWrap = false)
+                    }
                 }
                 val env = state.deviceEnvironment
                 if (env == null) {

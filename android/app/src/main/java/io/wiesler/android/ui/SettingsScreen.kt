@@ -3,11 +3,14 @@ package io.wiesler.android.ui
 import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -54,9 +57,10 @@ fun SettingsScreen(
 ) {
     val semantic = LocalWieslerColors.current
 
+    val bottomClearance = LocalBottomBarClearance.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp + bottomClearance),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item(key = "header") {
@@ -102,18 +106,32 @@ fun SettingsScreen(
                         }
                     }
                 }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Max),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Button(
                         onClick = onScanControllers,
                         enabled = !state.discoveringControllers,
-                        modifier = Modifier.weight(1f)
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                        modifier = Modifier.weight(1f).fillMaxHeight()
                     ) {
                         Icon(Icons.Rounded.Radar, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(if (state.discoveringControllers) "扫描中…" else "扫描本机端口")
+                        Text(
+                            text = if (state.discoveringControllers) "扫描中…" else "扫描本机端口",
+                            maxLines = 1,
+                            softWrap = false
+                        )
                     }
-                    FilledTonalButton(onClick = onOpenManualController, modifier = Modifier.weight(1f)) {
-                        Text("手动配置 / Secret")
+                    FilledTonalButton(
+                        onClick = onOpenManualController,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    ) {
+                        Text("手动配置密钥", maxLines = 1, softWrap = false)
                     }
                 }
                 if (state.controllerEnabled) {
@@ -224,7 +242,7 @@ fun SettingsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Material You 动态取色", style = MaterialTheme.typography.titleMedium)
-                            Text("跟随系统壁纸生成 Expressive 色彩方案（关闭使用 Wiesler 深海薄荷配色）", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("跟随系统壁纸生成色彩方案（关闭使用桌面端纯黑白与静谧蓝配色）", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = state.preferences.dynamicColor, onCheckedChange = onToggleDynamicColor)
                     }

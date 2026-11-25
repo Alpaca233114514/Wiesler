@@ -2,9 +2,11 @@ package io.wiesler.android.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -76,9 +78,10 @@ fun MonitorScreen(
     val directCount = frame?.flows?.count { it.routing == FlowRouting.DIRECT } ?: 0
     val proxyCount = frame?.flows?.count { it.routing == FlowRouting.PROXY } ?: 0
 
+    val bottomClearance = LocalBottomBarClearance.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp + bottomClearance),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item(key = "header") {
@@ -112,27 +115,35 @@ fun MonitorScreen(
                         Text(if (state.controllerEnabled) "控制器" else "连接控制器")
                     }
                 }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Max),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     MetricChipTile(
                         label = "当前连接",
                         value = if (state.controllerEnabled && frame != null) "${frame.flows.size}" else "—",
                         subtitle = "直连 $directCount · 代理 $proxyCount",
                         accentColor = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.weight(1f)
+                        compact = true,
+                        modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                     MetricChipTile(
                         label = "下载 / 秒",
                         value = formatRate(frame?.rxTotal),
                         subtitle = frame?.downloadTotal?.let { "累计 ${formatBytes(it.toDouble())}" } ?: "等待快照",
                         accentColor = semantic.download,
-                        modifier = Modifier.weight(1f)
+                        compact = true,
+                        modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                     MetricChipTile(
                         label = "上传 / 秒",
                         value = formatRate(frame?.txTotal),
                         subtitle = frame?.uploadTotal?.let { "累计 ${formatBytes(it.toDouble())}" } ?: "等待快照",
                         accentColor = semantic.upload,
-                        modifier = Modifier.weight(1f)
+                        compact = true,
+                        modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                 }
                 DualSeriesAreaChart(

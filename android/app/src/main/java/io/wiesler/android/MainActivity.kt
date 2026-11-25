@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
     private var controllerBusy = false
     private var controllerGeneration = 0
     private var connectionState = "尚未连接手机控制器"
-    private var connections = emptyList<JSONObject>()
+    private var availableExitsCache = emptyList<String>()
     private var lastRate: Rate? = null
     private var lastRx = -1L
     private var lastTx = -1L
@@ -87,7 +87,26 @@ class MainActivity : ComponentActivity() {
     private var egressGeneration = 0
     private var privacyRunGeneration = 0
     private var lastPersistedAt = 0L
+    private var lastSystemProbeAt = 0L
+    private var cachedNetworkSummary = "读取中"
+    private var cachedDiagnosticText = ""
+    private var cachedUsageAllowed = false
+    private var cachedPrivacyFrame: StudioFrame? = null
+    private var cachedPrivacyPolicy: PrivacyPolicy? = null
+    private var cachedPrivacyReport: PrivacyReport? = null
+    private var cachedPrivacySummary: PrivacySummary? = null
     private var uiPrefs = AppUiPreferences()
+    private val sampleDateFmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.ROOT)
+    private val lossTimeFmt = SimpleDateFormat("HH:mm:ss", Locale.ROOT)
+
+    private data class ParsedConnectionsSnapshot(
+        val time: Long,
+        val flows: List<StudioFlow>,
+        val counters: List<RoutedCounter>,
+        val exits: List<String>,
+        val downTotal: Long?,
+        val upTotal: Long?
+    )
 
     private var uiState by mutableStateOf(WieslerUiState())
     private val connectivity get() = getSystemService(ConnectivityManager::class.java)
@@ -160,7 +179,8 @@ class MainActivity : ComponentActivity() {
         handler.removeCallbacks(tick)
         handler.post(tick)
         if (controllerEnabled && !controllerBusy && !capturePaused) fetchConnections()
-        if (uiState.activeTab == WieslerTab.MONITOR && usageAllowed()) loadUsage()
+        refreshSystemProbes(force = true)
+        if (uiState.activeTab == WieslerTab.MONITOR && cachedUsageAllowed) loadUsage()
         publishUiState()
     }
 
@@ -173,7 +193,7 @@ class MainActivity : ComponentActivity() {
         studio.resetBaseline()
         resetForward()
         if (lossRunning) stopLoss("已进入后台，监控停止")
-        persistState()
+        persistState(async = false)
         super.onPause()
     }
 
@@ -344,20 +364,30 @@ class MainActivity : ComponentActivity() {
     private val tick = object : Runnable {
         override fun run() {
             if (!foreground) return
+            val nowMs = SystemClock.elapsedRealtime()
+            val tab = uiState.activeTab
             if (!paused) {
                 lastRx = android.net.TrafficStats.getTotalRxBytes()
                 lastTx = android.net.TrafficStats.getTotalTxBytes()
-                lastRate = rates.accept(CounterSample(SystemClock.elapsedRealtime(), lastRx, lastTx))
+                lastRate = rates.accept(CounterSample(nowMs, lastRx, lastTx))
                 appendSample(trend, lastRate)
-                sampledAt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.ROOT).format(Date())
+                sampledAt = sampleDateFmt.format(Date())
             }
+            var triggeredFetch = false
             if (!capturePaused) {
-                if (uiState.activeTab == WieslerTab.GRAPH && !studio.live) sampleDemo()
-                val needsController = forwardEnabled || uiState.activeTab in setOf(WieslerTab.GRAPH, WieslerTab.MONITOR, WieslerTab.PRIVACY)
-                if (controllerEnabled && needsController && !controllerBusy) fetchConnections()
+                if (tab == WieslerTab.GRAPH && !studio.live) sampleDemo()
+                val needsController = forwardEnabled || tab in setOf(WieslerTab.GRAPH, WieslerTab.MONITOR, WieslerTab.PRIVACY)
+                if (controllerEnabled && needsController && !controllerBusy) {
+                    fetchConnections()
+                    triggeredFetch = true
+                }
             }
-            if (SystemClock.elapsedRealtime() - lastPersistedAt >= 5000) persistState()
-            publishUiState()
+            if (nowMs - lastPersistedAt >= 5000) persistState(async = true)
+            // 本轮若只更新 TrafficStats 且即将等待控制器回包，避免在无变化标签页做无谓重组。
+            // Only publish immediately on tabs that show live TrafficStats/demo or when no fetch is in flight.
+            if (!triggeredFetch || tab == WieslerTab.MONITOR || (tab == WieslerTab.GRAPH && !studio.live)) {
+                publishUiState()
+            }
             handler.postDelayed(this, 1000)
         }
     }
@@ -368,7 +398,7 @@ class MainActivity : ComponentActivity() {
         publishUiState()
     }
 
-    private fun persistState() {
+    private fun persistState(async: Boolean = true) {
         val history = SavedHistory(
             trend.toList(),
             forwardTrend.toList(),
@@ -378,15 +408,27 @@ class MainActivity : ComponentActivity() {
             sampledAt,
             forwardSampledAt
         )
-        getPreferences(0).edit()
-            .putBoolean("studioAvailable", true)
-            .putInt("ui_tab", uiState.activeTab.index)
-            .putBoolean("paused", paused)
-            .putBoolean("forwardEnabled", forwardEnabled)
-            .putStringSet("overseasExits", overseasExits)
-            .putString("history", history.encode())
-            .apply()
+        val tabIndex = uiState.activeTab.index
+        val isPaused = paused
+        val isForward = forwardEnabled
+        val exitsCopy = overseasExits.toSet()
         lastPersistedAt = SystemClock.elapsedRealtime()
+        val writeAction = {
+            val encoded = history.encode()
+            getPreferences(0).edit()
+                .putBoolean("studioAvailable", true)
+                .putInt("ui_tab", tabIndex)
+                .putBoolean("paused", isPaused)
+                .putBoolean("forwardEnabled", isForward)
+                .putStringSet("overseasExits", exitsCopy)
+                .putString("history", encoded)
+                .apply()
+        }
+        if (async && !worker.isShutdown) {
+            worker.execute(writeAction)
+        } else {
+            writeAction()
+        }
     }
 
     private fun appendSample(samples: MutableList<Rate?>, rate: Rate?) {
@@ -438,7 +480,7 @@ class MainActivity : ComponentActivity() {
             .putString("controller", controller)
             .putStringSet("overseasExits", overseasExits)
             .apply()
-        connections = emptyList()
+        availableExitsCache = emptyList()
         connectionState = "连接中…"
         persistState()
         publishUiState()
@@ -455,7 +497,7 @@ class MainActivity : ComponentActivity() {
         controllerGeneration++
         controllerEnabled = false
         secret = ""
-        connections = emptyList()
+        availableExitsCache = emptyList()
         connectionState = "已断开"
         resetForward()
         appendSample(mihomoTrend, null)
@@ -542,10 +584,30 @@ class MainActivity : ComponentActivity() {
                     if (!json.has("connections")) error("不是有效的 Mihomo 快照")
                     val array = json.optJSONArray("connections")
                     if (array == null && !json.isNull("connections")) error("连接列表格式无效")
-                    val list = (0 until (array?.length() ?: 0)).map { array!!.getJSONObject(it) }
+                    val count = array?.length() ?: 0
+                    val parsedFlows = ArrayList<StudioFlow>(count)
+                    val counters = ArrayList<RoutedCounter>(count)
+                    val exits = HashSet<String>()
+                    // 在后台线程完成全部连接 JSON 解析与出口提取，彻底移出主线程。
+                    // Parse all flows, counters, and candidate exits off the main thread.
+                    for (idx in 0 until count) {
+                        val item = array!!.getJSONObject(idx)
+                        parsedFlows.add(parseStudioFlow(item))
+                        val counter = routedCounter(item)
+                        counters.add(counter)
+                        val exit = counter.exit
+                        if (exit != null && eligibleExit(exit)) exits.add(exit)
+                    }
                     val downTotal = json.optLong("downloadTotal", -1L).takeIf { it >= 0 }
                     val upTotal = json.optLong("uploadTotal", -1L).takeIf { it >= 0 }
-                    Triple(SystemClock.elapsedRealtime(), list, Pair(downTotal, upTotal))
+                    ParsedConnectionsSnapshot(
+                        time = SystemClock.elapsedRealtime(),
+                        flows = parsedFlows,
+                        counters = counters,
+                        exits = exits.sorted(),
+                        downTotal = downTotal,
+                        upTotal = upTotal
+                    )
                 } finally {
                     connection.disconnect()
                 }
@@ -554,39 +616,37 @@ class MainActivity : ComponentActivity() {
                 controllerBusy = false
                 if (isDestroyed || !foreground || generation != controllerGeneration) return@post
                 result.fold(
-                    onSuccess = { (time, items, totals) ->
-                        connections = items
-                        val parsedFlows = items.map(::parseStudioFlow)
+                    onSuccess = { snapshot ->
+                        availableExitsCache = snapshot.exits
                         if (studio.live) {
                             studio.accept(
-                                flows = parsedFlows,
-                                time = time,
+                                flows = snapshot.flows,
+                                time = snapshot.time,
                                 wallTime = System.currentTimeMillis(),
-                                downloadTotal = totals.first,
-                                uploadTotal = totals.second
+                                downloadTotal = snapshot.downTotal,
+                                uploadTotal = snapshot.upTotal
                             )
                             val rxT = studio.frames.lastOrNull()?.rxTotal
                             val txT = studio.frames.lastOrNull()?.txTotal
                             appendSample(mihomoTrend, if (rxT != null && txT != null) Rate(rxT, txT) else null)
                         }
-                        forwardSampledAt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.ROOT).format(Date())
-                        connectionState = "已连接 · HTTP $httpStatus · ${items.size} 条连接 · $forwardSampledAt"
+                        forwardSampledAt = sampleDateFmt.format(Date())
+                        connectionState = "已连接 · HTTP $httpStatus · ${snapshot.flows.size} 条连接 · $forwardSampledAt"
                         appendRequestLog("Mihomo /connections", httpStatus, null)
                         if (forwardEnabled) {
-                            val counters = items.map(::routedCounter)
-                            forwardRate = forwardRates.accept(time, counters, overseasExits)
+                            forwardRate = forwardRates.accept(snapshot.time, snapshot.counters, overseasExits)
                             appendSample(forwardTrend, forwardRate)
-                            val count = counters.count { trafficRoute(it.exit, overseasExits) == TrafficRoute.OVERSEAS }
+                            val count = snapshot.counters.count { trafficRoute(it.exit, overseasExits) == TrafficRoute.OVERSEAS }
                             forwardState = when {
                                 overseasExits.isEmpty() -> "请选择海外出口"
-                                count == 0 && items.isNotEmpty() -> "所选出口未匹配当前连接，请核对节点名称"
+                                count == 0 && snapshot.flows.isNotEmpty() -> "所选出口未匹配当前连接，请核对节点名称"
                                 forwardRate == null -> "等待连续采样 · $forwardSampledAt"
                                 else -> "$count 条转发连接 · $forwardSampledAt"
                             }
                         }
                     },
                     onFailure = { err ->
-                        connections = emptyList()
+                        availableExitsCache = emptyList()
                         val rawMessage = when (err) {
                             is java.net.ConnectException -> "无法连接，请确认手机控制器已开启"
                             is java.net.SocketTimeoutException -> "连接超时，正在重试"
@@ -737,7 +797,21 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshSystemNetwork() {
-        uiState = uiState.copy(systemNetworkSnapshot = diagnosticText())
+        refreshSystemProbes(force = true)
+        uiState = uiState.copy(
+            networkSummary = cachedNetworkSummary,
+            systemNetworkSnapshot = cachedDiagnosticText,
+            usageAllowed = cachedUsageAllowed
+        )
+    }
+
+    private fun refreshSystemProbes(force: Boolean = false) {
+        val now = SystemClock.elapsedRealtime()
+        if (!force && now - lastSystemProbeAt < 5000 && cachedDiagnosticText.isNotBlank()) return
+        lastSystemProbeAt = now
+        cachedNetworkSummary = networkSummary()
+        cachedDiagnosticText = diagnosticText()
+        cachedUsageAllowed = usageAllowed()
     }
 
     private fun importDatabase(uri: Uri) {
@@ -877,7 +951,7 @@ class MainActivity : ComponentActivity() {
                 if (isDestroyed || !foreground || !lossRunning || generation != lossGeneration) return@post
                 lossProbe = null
                 lossWindow.add(result)
-                lossStatus = "$address · ${SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date())} · ${result.message}"
+                lossStatus = "$address · ${lossTimeFmt.format(Date())} · ${result.message}"
                 publishUiState()
                 handler.postDelayed(lossTick, 1000)
             }
@@ -923,10 +997,10 @@ class MainActivity : ComponentActivity() {
 
     private fun appendRequestLog(source: String, code: Int?, error: String?) {
         requestLogs.addFirst(
-            RequestLog(SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date()), source, code, error)
+            RequestLog(sampleDateFmt.format(Date()), source, code, error)
         )
         while (requestLogs.size > 100) requestLogs.removeLast()
-        if (!foreground) persistState()
+        if (!foreground) persistState(async = false)
     }
 
     private fun networkSummary(): String {
@@ -964,14 +1038,41 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun publishUiState() {
-        val policy = PrivacyPolicy(uiPrefs.expectProxy, uiPrefs.uploadThresholdKib.toLong() * 1024L)
-        val privacyReport = PrivacyInspector.analyze(studio.current, policy, if (studio.live) "mihomo" else "demo")
-        val privacySummary = PrivacyInspector.summarize(privacyReport)
-        val candidates = (connections.mapNotNull { routedCounter(it).exit }.filter(::eligibleExit) + overseasExits).distinct().sorted()
+        refreshSystemProbes(force = false)
+        val tab = uiState.activeTab
+        val currentFrame = studio.current
+        // 仅在隐私页按需重新分析 400+ 连接，避免非隐私页每秒重复扫描。
+        // Recompute privacy analysis lazily when viewing the Privacy tab or when frame/policy changes.
+        if (tab == WieslerTab.PRIVACY) {
+            val policy = PrivacyPolicy(uiPrefs.expectProxy, uiPrefs.uploadThresholdKib.toLong() * 1024L)
+            if (currentFrame !== cachedPrivacyFrame || policy != cachedPrivacyPolicy || cachedPrivacyReport == null) {
+                val report = PrivacyInspector.analyze(currentFrame, policy, if (studio.live) "mihomo" else "demo")
+                cachedPrivacyFrame = currentFrame
+                cachedPrivacyPolicy = policy
+                cachedPrivacyReport = report
+                cachedPrivacySummary = PrivacyInspector.summarize(report)
+            }
+        }
+        val candidates = if (overseasExits.isEmpty()) availableExitsCache else (availableExitsCache + overseasExits).distinct().sorted()
         val frameIndex = if (studio.held == null) {
             (studio.frames.size - 1).coerceAtLeast(0)
         } else {
             studio.frames.indexOf(studio.held).coerceAtLeast(0)
+        }
+        // 仅在图谱页计算筛选列表、分组与前 60 条可见会话的速率微折线，避开全量 60×500 循环。
+        // Compute filtered flows, host groups, and visible-slice sparklines only on the Graph tab.
+        val filteredFlows: List<StudioFlow>
+        val hostGroups: List<StudioHostGroup>
+        val rateHist: Map<String, List<Rate?>>
+        if (tab == WieslerTab.GRAPH) {
+            filteredFlows = studio.filtered()
+            hostGroups = studio.graphHostGroups(filteredFlows)
+            val visibleKeys = filteredFlows.take(60).mapTo(HashSet()) { it.flowKey }
+            rateHist = studio.rateHistory(filterKeys = visibleKeys)
+        } else {
+            filteredFlows = uiState.studioFilteredFlows
+            hostGroups = uiState.studioHostGroups
+            rateHist = uiState.studioRateHistory
         }
         uiState = uiState.copy(
             preferences = uiPrefs,
@@ -984,27 +1085,27 @@ class MainActivity : ComponentActivity() {
             studioFrozen = studio.held != null,
             studioFrameCount = studio.frames.size,
             studioFrameIndex = frameIndex,
-            studioCurrentFrame = studio.current,
-            studioFilteredFlows = studio.filtered(),
-            studioHostGroups = studio.graphHostGroups(),
+            studioCurrentFrame = currentFrame,
+            studioFilteredFlows = filteredFlows,
+            studioHostGroups = hostGroups,
             studioSelectedId = studio.selectedId,
             studioQuery = studio.query,
             studioProtocol = studio.protocol,
             studioSourceFilter = studio.sourceFilter,
-            studioRateHistory = studio.rateHistory(),
-            mihomoTrend = mihomoTrend.toList(),
+            studioRateHistory = rateHist,
+            mihomoTrend = if (tab == WieslerTab.MONITOR) mihomoTrend.toList() else uiState.mihomoTrend,
             globalEnabled = !paused,
             globalRate = lastRate,
-            globalTrend = trend.toList(),
+            globalTrend = if (tab == WieslerTab.MONITOR || tab == WieslerTab.HISTORY) trend.toList() else uiState.globalTrend,
             globalSampledAt = sampledAt,
             bootRxBytes = lastRx,
             bootTxBytes = lastTx,
-            networkSummary = networkSummary(),
+            networkSummary = cachedNetworkSummary,
             forwardEnabled = forwardEnabled,
             overseasExits = overseasExits,
             availableExits = candidates,
             forwardRate = forwardRate,
-            forwardTrend = forwardTrend.toList(),
+            forwardTrend = if (tab == WieslerTab.MONITOR) forwardTrend.toList() else uiState.forwardTrend,
             forwardState = forwardState,
             forwardObservedRx = forwardRates.observedRx,
             forwardObservedTx = forwardRates.observedTx,
@@ -1018,13 +1119,13 @@ class MainActivity : ComponentActivity() {
                 received = lossWindow.received,
                 errors = lossWindow.errors
             ),
-            usageAllowed = usageAllowed(),
-            systemNetworkSnapshot = diagnosticText(),
+            usageAllowed = cachedUsageAllowed,
+            systemNetworkSnapshot = cachedDiagnosticText,
             httpsProbeBusy = probeBusy,
             httpsProbeResult = probeResult,
-            requestLogs = requestLogs.toList(),
-            privacyReport = privacyReport,
-            privacySummary = privacySummary
+            requestLogs = if (tab == WieslerTab.MONITOR || tab == WieslerTab.HISTORY) requestLogs.toList() else uiState.requestLogs,
+            privacyReport = cachedPrivacyReport,
+            privacySummary = cachedPrivacySummary
         )
     }
 }

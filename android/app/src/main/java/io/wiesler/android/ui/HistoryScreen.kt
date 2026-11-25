@@ -2,11 +2,14 @@ package io.wiesler.android.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -48,9 +51,10 @@ fun HistoryScreen(
 ) {
     val timeFmt = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT) }
 
+    val bottomClearance = LocalBottomBarClearance.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp + bottomClearance),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item(key = "header") {
@@ -167,21 +171,29 @@ fun HistoryScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Max),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     MetricChipTile(
-                        label = "全局趋势样本",
+                        label = "全局样本",
                         value = "${state.globalTrend.count { it != null }} / 60",
-                        modifier = Modifier.weight(1f)
+                        compact = true,
+                        modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                     MetricChipTile(
                         label = "图谱回放帧",
                         value = "${state.studioFrameCount} / 60",
-                        modifier = Modifier.weight(1f)
+                        compact = true,
+                        modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                     MetricChipTile(
                         label = "请求日志",
                         value = "${state.requestLogs.size} / 100",
-                        modifier = Modifier.weight(1f)
+                        compact = true,
+                        modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                 }
             }

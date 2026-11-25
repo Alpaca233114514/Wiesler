@@ -26,8 +26,6 @@ import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Router
 import androidx.compose.material3.ButtonGroupDefaults
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -67,11 +65,11 @@ fun ExpressiveSectionCard(
     containerColor: Color = MaterialTheme.colorScheme.surfaceContainerLow,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    ElevatedCard(
+    Surface(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.elevatedCardColors(containerColor = containerColor),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
+        color = containerColor,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(
             modifier = Modifier
@@ -99,7 +97,7 @@ fun ExpressivePageHeader(
             Text(
                 text = kicker.uppercase(Locale.ROOT),
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
@@ -173,7 +171,12 @@ fun <T> ExpressiveConnectedChoiceRow(
                 onCheckedChange = { if (it) onSelect(value) },
                 shapes = shape,
                 modifier = if (scrollable) Modifier else Modifier.weight(1f),
-                colors = ToggleButtonDefaults.tonalToggleButtonColors(),
+                colors = ToggleButtonDefaults.tonalToggleButtonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    checkedContainerColor = MaterialTheme.colorScheme.onBackground,
+                    checkedContentColor = MaterialTheme.colorScheme.background
+                ),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
             ) {
                 Text(
@@ -543,7 +546,8 @@ fun MetricChipTile(
     value: String,
     modifier: Modifier = Modifier,
     subtitle: String? = null,
-    accentColor: Color = MaterialTheme.colorScheme.primary
+    accentColor: Color = MaterialTheme.colorScheme.primary,
+    compact: Boolean = false
 ) {
     val animatedAccent by animateColorAsState(targetValue = accentColor, label = "MetricAccent")
     Surface(
@@ -552,13 +556,23 @@ fun MetricChipTile(
         color = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
+            modifier = Modifier.padding(
+                horizontal = if (compact) 10.dp else 14.dp,
+                vertical = if (compact) 12.dp else 14.dp
+            ),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             Text(
                 text = value,
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                style = (if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge)
+                    .copy(fontWeight = FontWeight.Bold),
                 color = animatedAccent,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis

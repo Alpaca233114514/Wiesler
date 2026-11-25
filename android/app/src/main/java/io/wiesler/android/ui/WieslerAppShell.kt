@@ -1,22 +1,35 @@
 package io.wiesler.android.ui
 
+import android.os.Build
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -31,8 +44,6 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -40,18 +51,49 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.layer.GraphicsLayer
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import io.wiesler.android.DiscoveredController
 import io.wiesler.android.R
@@ -60,6 +102,8 @@ import io.wiesler.android.StudioSourceFilter
 import io.wiesler.android.ThemePreference
 import io.wiesler.android.eligibleExit
 import java.net.URI
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 data class WieslerActions(
     val onSelectTab: (WieslerTab) -> Unit,
@@ -113,143 +157,172 @@ fun WieslerAppShell(
     actions: WieslerActions
 ) {
     val semantic = LocalWieslerColors.current
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    titleContentColor = MaterialTheme.colorScheme.onBackground
-                ),
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(RoundedCornerShape(11.dp))
-                                .background(Color(0xFF181818))
-                                .border(1.dp, Color(0xFF3E3E3E), RoundedCornerShape(11.dp))
-                                .padding(6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Image(
-                                painter = painterResource(R.drawable.ic_logo_mark),
-                                contentDescription = "Wiesler",
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
-                        Text("Wiesler", style = MaterialTheme.typography.titleLarge)
-                    }
-                },
-                actions = {
-                    val liveOk = state.controllerEnabled && !state.capturePaused
-                    StatusPill(
-                        text = when {
-                            state.capturePaused -> "已暂停"
-                            state.controllerEnabled -> "Mihomo 实时"
-                            else -> "仅本机观测"
-                        },
-                        containerColor = if (liveOk) semantic.download.copy(alpha = 0.16f)
-                        else MaterialTheme.colorScheme.surfaceContainerHigh,
-                        contentColor = if (liveOk) semantic.download
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(end = 12.dp)
-                    )
-                }
-            )
-        },
-        bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-                val items = listOf(
-                    Triple(WieslerTab.GRAPH, "图谱", Icons.Rounded.Hub),
-                    Triple(WieslerTab.MONITOR, "监测", Icons.Rounded.MonitorHeart),
-                    Triple(WieslerTab.PRIVACY, "隐私", Icons.Rounded.Shield),
-                    Triple(WieslerTab.HISTORY, "历史", Icons.Rounded.History),
-                    Triple(WieslerTab.SETTINGS, "设置", Icons.Rounded.Settings)
-                )
-                items.forEach { (tab, title, icon) ->
-                    NavigationBarItem(
-                        selected = state.activeTab == tab,
-                        onClick = { actions.onSelectTab(tab) },
-                        icon = { Icon(icon, contentDescription = title) },
-                        label = { Text(title, style = MaterialTheme.typography.labelMedium) }
-                    )
-                }
-            }
-        }
-    ) { innerPadding ->
+    val isDark = LocalIsDarkTheme.current
+    val backdropLayer = rememberGraphicsLayer()
+    var backdropTopLeft by remember { mutableStateOf(Offset.Zero) }
+    val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val bottomClearance = 92.dp + navBarBottom
+
+    val navItems = remember {
+        listOf(
+            Triple(WieslerTab.GRAPH, "图谱", Icons.Rounded.Hub),
+            Triple(WieslerTab.MONITOR, "监测", Icons.Rounded.MonitorHeart),
+            Triple(WieslerTab.PRIVACY, "隐私", Icons.Rounded.Shield),
+            Triple(WieslerTab.HISTORY, "历史", Icons.Rounded.History),
+            Triple(WieslerTab.SETTINGS, "设置", Icons.Rounded.Settings)
+        )
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 将主内容录制到 GraphicsLayer，供悬浮底栏裁剪后实时做硬件毛玻璃模糊。
+        // Record main content into a GraphicsLayer so the floating dock can blur its live backdrop.
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
+                .onGloballyPositioned { backdropTopLeft = it.positionInRoot() }
+                .drawWithContent {
+                    backdropLayer.record {
+                        this@drawWithContent.drawContent()
+                    }
+                    drawLayer(backdropLayer)
+                }
         ) {
-            Crossfade(targetState = state.activeTab, label = "MainTabCrossfade") { tab ->
-                when (tab) {
-                    WieslerTab.GRAPH -> GraphWorkbenchScreen(
-                        state = state,
-                        onSwitchSource = actions.onSwitchStudioSource,
-                        onToggleFreeze = actions.onToggleFreeze,
-                        onToggleCapturePause = actions.onToggleCapturePause,
-                        onReplayIndex = actions.onReplayIndex,
-                        onBackToNow = actions.onBackToNow,
-                        onQueryChange = actions.onQueryChange,
-                        onProtocolChange = actions.onProtocolChange,
-                        onSourceFilterChange = actions.onSourceFilterChange,
-                        onSelectFlow = actions.onSelectFlow,
-                        onOpenControllerDialog = { actions.onSetControllerDialog(true) },
-                        onRefreshEgress = actions.onRefreshEgress
+            Scaffold(
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                topBar = {
+                    TopAppBar(
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background,
+                            titleContentColor = MaterialTheme.colorScheme.onBackground
+                        ),
+                        title = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(RoundedCornerShape(11.dp))
+                                        .background(Color(0xFF181818))
+                                        .border(1.dp, Color(0xFF3E3E3E), RoundedCornerShape(11.dp))
+                                        .padding(6.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Image(
+                                        painter = painterResource(R.drawable.ic_logo_mark),
+                                        contentDescription = "Wiesler",
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                                Text("Wiesler", style = MaterialTheme.typography.titleLarge)
+                            }
+                        },
+                        actions = {
+                            val liveOk = state.controllerEnabled && !state.capturePaused
+                            StatusPill(
+                                text = when {
+                                    state.capturePaused -> "已暂停"
+                                    state.controllerEnabled -> "Mihomo 实时"
+                                    else -> "仅本机观测"
+                                },
+                                containerColor = if (liveOk) semantic.download.copy(alpha = 0.16f)
+                                else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                contentColor = if (liveOk) semantic.download
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(end = 12.dp)
+                            )
+                        }
                     )
-                    WieslerTab.MONITOR -> MonitorScreen(
-                        state = state,
-                        onToggleGlobal = actions.onToggleGlobal,
-                        onToggleForward = actions.onToggleForward,
-                        onOpenControllerDialog = { actions.onSetControllerDialog(true) },
-                        onOpenExitsDialog = { actions.onSetExitsDialog(true) },
-                        onJumpOverseasConnections = actions.onJumpOverseasConnections,
-                        onStartLoss = actions.onStartLoss,
-                        onStopLoss = actions.onStopLoss,
-                        onRequestUsageAccess = actions.onRequestUsageAccess,
-                        onRefreshUsage = actions.onRefreshUsage,
-                        onRefreshEgress = actions.onRefreshEgress,
-                        onOpenScopeDialog = { actions.onSetScopeDialog(true) }
-                    )
-                    WieslerTab.PRIVACY -> PrivacyScreen(
-                        state = state,
-                        onRunActivePrivacy = actions.onRunActivePrivacy,
-                        onUpdateExpectProxy = actions.onUpdateExpectProxy,
-                        onUpdateUploadThresholdKib = actions.onUpdateUploadThresholdKib,
-                        onRunHttpsProbe = actions.onRunHttpsProbe,
-                        onRefreshSystemNetwork = actions.onRefreshSystemNetwork,
-                        onRunEnvironmentCheck = actions.onRunEnvironmentCheck,
-                        onGeneratePrivacyJson = actions.onGeneratePrivacyJson,
-                        onShareTextReport = actions.onShareTextReport,
-                        onShareJsonReport = actions.onShareJsonReport
-                    )
-                    WieslerTab.HISTORY -> HistoryScreen(
-                        state = state,
-                        onPickDatabase = actions.onPickDatabase,
-                        onSelectSession = actions.onSelectHistorySession,
-                        onGenerateReport = actions.onGenerateHistoryReport,
-                        onShareHistoryReport = actions.onShareHistoryReport
-                    )
-                    WieslerTab.SETTINGS -> SettingsScreen(
-                        state = state,
-                        onScanControllers = actions.onScanControllers,
-                        onConnectDiscovered = actions.onConnectDiscovered,
-                        onOpenManualController = { actions.onSetControllerDialog(true) },
-                        onDisconnectController = actions.onDisconnectController,
-                        onOpenExitsDialog = { actions.onSetExitsDialog(true) },
-                        onTogglePulseAnimation = actions.onTogglePulseAnimation,
-                        onToggleExpectProxy = actions.onUpdateExpectProxy,
-                        onChangeThemeMode = actions.onChangeThemeMode,
-                        onToggleDynamicColor = actions.onToggleDynamicColor,
-                        onOpenScopeDialog = { actions.onSetScopeDialog(true) }
-                    )
+                }
+            ) { innerPadding ->
+                CompositionLocalProvider(LocalBottomBarClearance provides bottomClearance) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding)
+                    ) {
+                        Crossfade(targetState = state.activeTab, label = "MainTabCrossfade") { tab ->
+                            when (tab) {
+                                WieslerTab.GRAPH -> GraphWorkbenchScreen(
+                                    state = state,
+                                    onSwitchSource = actions.onSwitchStudioSource,
+                                    onToggleFreeze = actions.onToggleFreeze,
+                                    onToggleCapturePause = actions.onToggleCapturePause,
+                                    onReplayIndex = actions.onReplayIndex,
+                                    onBackToNow = actions.onBackToNow,
+                                    onQueryChange = actions.onQueryChange,
+                                    onProtocolChange = actions.onProtocolChange,
+                                    onSourceFilterChange = actions.onSourceFilterChange,
+                                    onSelectFlow = actions.onSelectFlow,
+                                    onOpenControllerDialog = { actions.onSetControllerDialog(true) },
+                                    onRefreshEgress = actions.onRefreshEgress
+                                )
+                                WieslerTab.MONITOR -> MonitorScreen(
+                                    state = state,
+                                    onToggleGlobal = actions.onToggleGlobal,
+                                    onToggleForward = actions.onToggleForward,
+                                    onOpenControllerDialog = { actions.onSetControllerDialog(true) },
+                                    onOpenExitsDialog = { actions.onSetExitsDialog(true) },
+                                    onJumpOverseasConnections = actions.onJumpOverseasConnections,
+                                    onStartLoss = actions.onStartLoss,
+                                    onStopLoss = actions.onStopLoss,
+                                    onRequestUsageAccess = actions.onRequestUsageAccess,
+                                    onRefreshUsage = actions.onRefreshUsage,
+                                    onRefreshEgress = actions.onRefreshEgress,
+                                    onOpenScopeDialog = { actions.onSetScopeDialog(true) }
+                                )
+                                WieslerTab.PRIVACY -> PrivacyScreen(
+                                    state = state,
+                                    onRunActivePrivacy = actions.onRunActivePrivacy,
+                                    onUpdateExpectProxy = actions.onUpdateExpectProxy,
+                                    onUpdateUploadThresholdKib = actions.onUpdateUploadThresholdKib,
+                                    onRunHttpsProbe = actions.onRunHttpsProbe,
+                                    onRefreshSystemNetwork = actions.onRefreshSystemNetwork,
+                                    onRunEnvironmentCheck = actions.onRunEnvironmentCheck,
+                                    onGeneratePrivacyJson = actions.onGeneratePrivacyJson,
+                                    onShareTextReport = actions.onShareTextReport,
+                                    onShareJsonReport = actions.onShareJsonReport
+                                )
+                                WieslerTab.HISTORY -> HistoryScreen(
+                                    state = state,
+                                    onPickDatabase = actions.onPickDatabase,
+                                    onSelectSession = actions.onSelectHistorySession,
+                                    onGenerateReport = actions.onGenerateHistoryReport,
+                                    onShareHistoryReport = actions.onShareHistoryReport
+                                )
+                                WieslerTab.SETTINGS -> SettingsScreen(
+                                    state = state,
+                                    onScanControllers = actions.onScanControllers,
+                                    onConnectDiscovered = actions.onConnectDiscovered,
+                                    onOpenManualController = { actions.onSetControllerDialog(true) },
+                                    onDisconnectController = actions.onDisconnectController,
+                                    onOpenExitsDialog = { actions.onSetExitsDialog(true) },
+                                    onTogglePulseAnimation = actions.onTogglePulseAnimation,
+                                    onToggleExpectProxy = actions.onUpdateExpectProxy,
+                                    onChangeThemeMode = actions.onChangeThemeMode,
+                                    onToggleDynamicColor = actions.onToggleDynamicColor,
+                                    onOpenScopeDialog = { actions.onSetScopeDialog(true) }
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
+
+        FloatingGlassNavBar(
+            items = navItems,
+            activeTab = state.activeTab,
+            isDark = isDark,
+            backdropLayer = backdropLayer,
+            backdropTopLeft = backdropTopLeft,
+            onSelectTab = actions.onSelectTab,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 24.dp, vertical = 14.dp)
+        )
     }
 
     if (state.showControllerDialog) {
@@ -297,6 +370,238 @@ fun WieslerAppShell(
                 TextButton(onClick = { actions.onSetScopeDialog(false) }) { Text("知道了") }
             }
         )
+    }
+}
+
+@Composable
+private fun FloatingGlassNavBar(
+    items: List<Triple<WieslerTab, String, ImageVector>>,
+    activeTab: WieslerTab,
+    isDark: Boolean,
+    backdropLayer: GraphicsLayer,
+    backdropTopLeft: Offset,
+    onSelectTab: (WieslerTab) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val pillShape = RoundedCornerShape(32.dp)
+    val density = LocalDensity.current
+    val blurRadiusPx = with(density) { 22.dp.toPx() }
+    val supportsBackdropBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    var dockTopLeft by remember { mutableStateOf(Offset.Zero) }
+
+    val glassTint = MaterialTheme.colorScheme.surfaceContainerLow.copy(
+        alpha = when {
+            supportsBackdropBlur && isDark -> 0.62f
+            supportsBackdropBlur && !isDark -> 0.72f
+            isDark -> 0.90f
+            else -> 0.94f
+        }
+    )
+    val sheenBrush = remember(isDark) {
+        Brush.verticalGradient(
+            colors = if (isDark) {
+                listOf(Color.White.copy(alpha = 0.09f), Color.White.copy(alpha = 0.02f), Color.Transparent)
+            } else {
+                listOf(Color.White.copy(alpha = 0.65f), Color.White.copy(alpha = 0.16f), Color.Transparent)
+            }
+        )
+    }
+    val rimColor = if (isDark) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.09f)
+    val shadowColor = if (isDark) Color.Black.copy(alpha = 0.60f) else Color.Black.copy(alpha = 0.14f)
+
+    val haptics = LocalHapticFeedback.current
+    val currentActiveTab by rememberUpdatedState(activeTab)
+    val currentOnSelectTab by rememberUpdatedState(onSelectTab)
+    val slotCount = items.size.coerceAtLeast(1)
+    val horizontalPadDp = 8.dp
+    val horizontalPadPx = with(density) { horizontalPadDp.toPx() }
+    val pillWidthDp = 58.dp
+    val pillHeightDp = 46.dp
+    val pillWidthPx = with(density) { pillWidthDp.toPx() }
+
+    var dockWidthPx by remember { mutableIntStateOf(0) }
+    var isScrubbing by remember { mutableStateOf(false) }
+    var scrubIndex by remember { mutableFloatStateOf(activeTab.index.toFloat()) }
+
+    val settledIndex by animateFloatAsState(
+        targetValue = activeTab.index.toFloat(),
+        animationSpec = spring(
+            dampingRatio = 0.74f,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "DockPillPosition"
+    )
+    val displayIndex = if (isScrubbing) scrubIndex else settledIndex
+    val pillScaleX by animateFloatAsState(
+        targetValue = if (isScrubbing) 1.12f else 1.0f,
+        animationSpec = spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMedium),
+        label = "DockPillScaleX"
+    )
+    val pillScaleY by animateFloatAsState(
+        targetValue = if (isScrubbing) 1.07f else 1.0f,
+        animationSpec = spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMedium),
+        label = "DockPillScaleY"
+    )
+
+    val pillFill = if (isScrubbing) {
+        MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.28f else 0.22f)
+    } else {
+        MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.20f else 0.14f)
+    }
+    val pillBorder = if (isScrubbing) {
+        MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.55f else 0.45f)
+    } else {
+        MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.24f else 0.18f)
+    }
+
+    Box(
+        modifier = modifier
+            .widthIn(max = 328.dp)
+            .fillMaxWidth()
+            .shadow(elevation = 16.dp, shape = pillShape, ambientColor = shadowColor, spotColor = shadowColor)
+            .clip(pillShape)
+            .height(62.dp)
+            .onGloballyPositioned { dockTopLeft = it.positionInRoot() }
+            .onSizeChanged { dockWidthPx = it.width }
+            // 统一处理点击与底栏内横向滑动聚焦：手指在图标间拖动时胶囊实时跟手并切换页面。
+            // Unified tap + horizontal scrub gesture so the focus pill tracks finger motion across icons.
+            .pointerInput(slotCount, horizontalPadPx) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val innerW = (size.width - horizontalPadPx * 2f).coerceAtLeast(1f)
+                    val slotW = innerW / slotCount
+                    fun positionToSlot(x: Float): Float =
+                        ((x - horizontalPadPx) / slotW - 0.5f).coerceIn(0f, (slotCount - 1).toFloat())
+
+                    val startX = down.position.x
+                    val downSlot = positionToSlot(startX)
+                    var lastIdx = currentActiveTab.index
+                    var moved = false
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) {
+                            if (!moved) {
+                                val tapIdx = downSlot.roundToInt().coerceIn(0, slotCount - 1)
+                                if (tapIdx != currentActiveTab.index) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    currentOnSelectTab(items[tapIdx].first)
+                                }
+                            }
+                            isScrubbing = false
+                            break
+                        }
+                        val posX = change.position.x
+                        if (!moved && abs(posX - startX) > viewConfiguration.touchSlop * 0.45f) {
+                            moved = true
+                            isScrubbing = true
+                        }
+                        if (moved) {
+                            change.consume()
+                            val slotPos = positionToSlot(posX)
+                            scrubIndex = slotPos
+                            val nearest = slotPos.roundToInt().coerceIn(0, slotCount - 1)
+                            if (nearest != lastIdx) {
+                                lastIdx = nearest
+                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                currentOnSelectTab(items[nearest].first)
+                            }
+                        }
+                    }
+                    isScrubbing = false
+                }
+            }
+    ) {
+        // Android 12+ 实时裁剪并模糊底栏背后内容层，低版本平滑退化为高透明磨砂底色。
+        // Clip and blur the live backdrop layer behind the dock on API 31+; translucent fallback on API 30.
+        if (supportsBackdropBlur) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .graphicsLayer {
+                        clip = true
+                        shape = pillShape
+                        renderEffect = BlurEffect(blurRadiusPx, blurRadiusPx, TileMode.Clamp)
+                    }
+                    .drawBehind {
+                        val dx = backdropTopLeft.x - dockTopLeft.x
+                        val dy = backdropTopLeft.y - dockTopLeft.y
+                        translate(left = dx, top = dy) {
+                            drawLayer(backdropLayer)
+                        }
+                    }
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(glassTint)
+                .background(sheenBrush)
+                .border(1.dp, rimColor, pillShape)
+        )
+
+        // 单一共享滑动聚焦胶囊，随点击弹性滑行或随手指横向拖动实时跟手。
+        // Single shared sliding focus pill gliding smoothly across icon slots.
+        if (dockWidthPx > 0) {
+            val innerWidthPx = (dockWidthPx - horizontalPadPx * 2f).coerceAtLeast(1f)
+            val slotWidthPx = innerWidthPx / slotCount
+            val pillOffsetX = (horizontalPadPx + (displayIndex + 0.5f) * slotWidthPx - pillWidthPx / 2f).roundToInt()
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .offset { IntOffset(pillOffsetX, 0) }
+                    .size(width = pillWidthDp, height = pillHeightDp)
+                    .graphicsLayer {
+                        scaleX = pillScaleX
+                        scaleY = pillScaleY
+                    }
+                    .clip(CircleShape)
+                    .background(pillFill)
+                    .border(1.dp, pillBorder, CircleShape)
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = horizontalPadDp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            items.forEachIndexed { idx, (tab, title, icon) ->
+                val focus = (1f - abs(displayIndex - idx)).coerceIn(0f, 1f)
+                val iconTint = lerp(
+                    MaterialTheme.colorScheme.onSurfaceVariant,
+                    MaterialTheme.colorScheme.primary,
+                    focus
+                )
+                val iconScale = 1f + 0.12f * focus
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(pillHeightDp)
+                        .semantics {
+                            contentDescription = title
+                            role = Role.Tab
+                            selected = tab == activeTab
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = iconTint,
+                        modifier = Modifier
+                            .size(24.dp)
+                            .graphicsLayer {
+                                scaleX = iconScale
+                                scaleY = iconScale
+                            }
+                    )
+                }
+            }
+        }
     }
 }
 

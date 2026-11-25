@@ -37,6 +37,18 @@ class PcSyncModulesTest {
 
         val connOk = ControllerDiscovery.parseConnectionsResponse(200, """{"connections":[]}""")
         assertTrue(connOk.isMihomo && connOk.ready)
+        val connTruncated = ControllerDiscovery.parseConnectionsResponse(
+            200,
+            """{"downloadTotal":12345,"uploadTotal":6789,"connections":[{"id":"1","metadata":{"host":"example.com"""",
+            truncated = true
+        )
+        assertTrue(connTruncated.isMihomo && connTruncated.ready)
+        val connTruncatedBogus = ControllerDiscovery.parseConnectionsResponse(
+            200,
+            """{"ok":true,"items":[1,2,3""",
+            truncated = true
+        )
+        assertFalse(connTruncatedBogus.isMihomo)
         val connGeneric = ControllerDiscovery.parseConnectionsResponse(200, """{"ok":true}""")
         assertFalse(connGeneric.isMihomo)
     }
@@ -62,6 +74,9 @@ class PcSyncModulesTest {
         assertEquals(2, hist[f1.flowKey]!!.size)
         assertNull(hist[f1.flowKey]!![0])
         assertEquals(2000.0, hist[f1.flowKey]!![1]!!.rx, 0.1)
+        val filteredHist = session.rateHistory(filterKeys = setOf("other-key"))
+        assertTrue(filteredHist.isEmpty())
+        assertTrue(f1.copy(raw = "").formattedRawJson().contains("\"api.example.com\""))
     }
 
     @Test fun privacyInspectorFlagsDnsBypassUploadAndComparesEgressTimezone() {

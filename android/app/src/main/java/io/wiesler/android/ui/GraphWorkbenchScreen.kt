@@ -116,6 +116,18 @@ private data class GraphNodeBox(
     val rect: Rect
 )
 
+private data class PulseEdge(
+    val start: Offset,
+    val end: Offset,
+    val hasRx: Boolean,
+    val hasTx: Boolean
+)
+
+private class GraphHitState {
+    var nodes: List<GraphNodeBox> = emptyList()
+    var edges: List<Triple<StudioFlow, Offset, Offset>> = emptyList()
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun GraphWorkbenchScreen(
@@ -143,9 +155,10 @@ fun GraphWorkbenchScreen(
         state.studioFilteredFlows.take(displayLimit)
     }
 
+    val bottomClearance = LocalBottomBarClearance.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp + bottomClearance),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item(key = "header") {
@@ -415,15 +428,13 @@ private fun InteractiveHostGraphCanvas(
     var pan by remember { mutableStateOf(Offset.Zero) }
     val customPositions = remember { mutableStateMapOf<String, Offset>() }
 
-    val pulsePhase by rememberInfiniteTransition(label = "PulsePhase").animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "PulseProgress"
-    )
+    // 复用 Paint 与 Typeface，避免绘制阶段重复创建原生字体句柄。
+    // Reuse Paint and Typeface across draws instead of recreating native font handles per frame.
+    val titleTypeface = remember { Typeface.create("sans-serif-medium", Typeface.NORMAL) }
+    val titlePaint = remember(titleTypeface) {
+        Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = titleTypeface }
+    }
+    val subPaint = remember { Paint(Paint.ANTI_ALIAS_FLAG) }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
@@ -468,8 +479,10 @@ private fun InteractiveHostGraphCanvas(
                     Text(emptyMessage, style = MaterialTheme.typography.bodyMedium, color = mutedColor)
                 }
             } else {
-                var latestNodes by remember { mutableStateOf<List<GraphNodeBox>>(emptyList()) }
-                var latestEdges by remember { mutableStateOf<List<Triple<StudioFlow, Offset, Offset>>>(emptyList()) }
+                // 使用普通引用保存命中几何，严禁在 Canvas.onDraw 内写 mutableStateOf 引发无限重绘。
+                // Keep hit-test geometry in a plain holder so Canvas.onDraw never mutates Compose State.
+                val hitState = remember { GraphHitState() }
+                var pulseEdges by remember { mutableStateOf<List<PulseEdge>>(emptyList()) }
                 var draggingKey by remember { mutableStateOf<String?>(null) }
 
                 Canvas(
@@ -478,14 +491,14 @@ private fun InteractiveHostGraphCanvas(
                         .pointerInput(groups, selectedId) {
                             detectTapGestures { tap ->
                                 val world = Offset((tap.x - pan.x) / zoom, (tap.y - pan.y) / zoom)
-                                val hitNode = latestNodes.lastOrNull { it.rect.contains(world) }
+                                val hitNode = hitState.nodes.lastOrNull { it.rect.contains(world) }
                                 if (hitNode != null) {
                                     onSelectFlow(hitNode.leader)
                                     return@detectTapGestures
                                 }
                                 var bestFlow: StudioFlow? = null
                                 var bestDist = 36f
-                                for ((flow, start, end) in latestEdges) {
+                                for ((flow, start, end) in hitState.edges) {
                                     for (step in 0..16) {
                                         val t = step / 16f
                                         val pt = cubicPoint(start, end, t)
@@ -503,7 +516,7 @@ private fun InteractiveHostGraphCanvas(
                             detectDragGestures(
                                 onDragStart = { start ->
                                     val world = Offset((start.x - pan.x) / zoom, (start.y - pan.y) / zoom)
-                                    draggingKey = latestNodes.lastOrNull { it.rect.contains(world) }?.key
+                                    draggingKey = hitState.nodes.lastOrNull { it.rect.contains(world) }?.key
                                 },
                                 onDragEnd = { draggingKey = null },
                                 onDragCancel = { draggingKey = null },
@@ -511,7 +524,7 @@ private fun InteractiveHostGraphCanvas(
                                     change.consume()
                                     val key = draggingKey
                                     if (key != null) {
-                                        val currentRect = latestNodes.firstOrNull { it.key == key }?.rect
+                                        val currentRect = hitState.nodes.firstOrNull { it.key == key }?.rect
                                         val base = customPositions[key] ?: currentRect?.topLeft ?: Offset.Zero
                                         customPositions[key] = Offset(base.x + amount.x / zoom, base.y + amount.y / zoom)
                                     } else {
@@ -529,12 +542,14 @@ private fun InteractiveHostGraphCanvas(
                 ) {
                     val w = size.width
                     val h = size.height
-                    val step = 22.dp.toPx()
+                    val step = 28.dp.toPx()
+                    val dotRadius = 1.dp.toPx()
+                    val gridDotColor = semantic.graphGrid.copy(alpha = 0.50f)
                     var gx = 0f
                     while (gx <= w) {
                         var gy = 0f
                         while (gy <= h) {
-                            drawCircle(semantic.graphGrid.copy(alpha = 0.55f), 1.dp.toPx(), Offset(gx, gy))
+                            drawCircle(gridDotColor, dotRadius, Offset(gx, gy))
                             gy += step
                         }
                         gx += step
@@ -567,7 +582,7 @@ private fun InteractiveHostGraphCanvas(
                     fun slotY(idx: Int, count: Int): Float =
                         if (count <= 1) (h - nodeH) / 2f else padY + idx * (h - padY * 2 - nodeH) / (count - 1).toFloat()
 
-                    val builtNodes = ArrayList<GraphNodeBox>()
+                    val builtNodes = ArrayList<GraphNodeBox>(appBuckets.size + groups.size)
                     appBuckets.forEachIndexed { idx, (key, label, members) ->
                         val leader = members.firstOrNull { it.id == selectedId } ?: members.first()
                         val pos = customPositions[key] ?: Offset(padX, slotY(idx, appBuckets.size))
@@ -609,6 +624,7 @@ private fun InteractiveHostGraphCanvas(
                     }
 
                     val builtEdges = ArrayList<Triple<StudioFlow, Offset, Offset>>()
+                    val nextPulses = ArrayList<PulseEdge>()
                     val canvas = drawContext.canvas.nativeCanvas
                     canvas.save()
                     canvas.translate(pan.x, pan.y)
@@ -642,27 +658,15 @@ private fun InteractiveHostGraphCanvas(
                             }
                             drawPath(path, color = edgeColor, style = Stroke(width = strokeW, cap = StrokeCap.Round))
 
-                            if (animatePulses) {
-                                if (tx > 0.0) {
-                                    val pt = cubicPoint(start, end, pulsePhase)
-                                    drawCircle(semantic.upload, radius = 3.2.dp.toPx(), center = pt)
-                                }
-                                if (rx > 0.0) {
-                                    val pt = cubicPoint(start, end, 1f - pulsePhase)
-                                    drawCircle(semantic.download, radius = 3.6.dp.toPx(), center = pt)
-                                }
+                            if (animatePulses && (tx > 0.0 || rx > 0.0)) {
+                                nextPulses.add(PulseEdge(start = start, end = end, hasRx = rx > 0.0, hasTx = tx > 0.0))
                             }
                         }
                     }
 
-                    val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                        color = inkColor.toArgb()
-                        textSize = 12.5.dp.toPx()
-                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                    }
-                    val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                        textSize = 10.5.dp.toPx()
-                    }
+                    titlePaint.color = inkColor.toArgb()
+                    titlePaint.textSize = 12.5.dp.toPx()
+                    subPaint.textSize = 10.5.dp.toPx()
                     val corner = CornerRadius(12.dp.toPx(), 12.dp.toPx())
                     for (node in builtNodes) {
                         val active = node.leader.id == selectedId ||
@@ -725,11 +729,62 @@ private fun InteractiveHostGraphCanvas(
                     }
 
                     canvas.restore()
-                    latestNodes = builtNodes
-                    latestEdges = builtEdges
+                    hitState.nodes = builtNodes
+                    hitState.edges = builtEdges
+                    if (pulseEdges != nextPulses) {
+                        pulseEdges = nextPulses
+                    }
+                }
+
+                // 仅在有活跃流量脉冲时挂载轻量叠层，隔离动画帧与静态拓扑画布。
+                // Isolate pulse dot animation into a tiny overlay mounted only when traffic pulses exist.
+                if (animatePulses && pulseEdges.isNotEmpty()) {
+                    PulseOverlayCanvas(
+                        edges = pulseEdges,
+                        pan = pan,
+                        zoom = zoom,
+                        uploadColor = semantic.upload,
+                        downloadColor = semantic.download
+                    )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PulseOverlayCanvas(
+    edges: List<PulseEdge>,
+    pan: Offset,
+    zoom: Float,
+    uploadColor: Color,
+    downloadColor: Color
+) {
+    val pulsePhase by rememberInfiniteTransition(label = "PulsePhase").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "PulseProgress"
+    )
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val canvas = drawContext.canvas.nativeCanvas
+        canvas.save()
+        canvas.translate(pan.x, pan.y)
+        canvas.scale(zoom, zoom)
+        val upRadius = 3.2.dp.toPx()
+        val downRadius = 3.6.dp.toPx()
+        for (edge in edges) {
+            if (edge.hasTx) {
+                drawCircle(uploadColor, radius = upRadius, center = cubicPoint(edge.start, edge.end, pulsePhase))
+            }
+            if (edge.hasRx) {
+                drawCircle(downloadColor, radius = downRadius, center = cubicPoint(edge.start, edge.end, 1f - pulsePhase))
+            }
+        }
+        canvas.restore()
     }
 }
 
@@ -969,9 +1024,7 @@ private fun SessionInspectorSheet(
                     }
                 }
                 "raw" -> {
-                    val pretty = remember(flow.raw) {
-                        runCatching { JSONObject(flow.raw).toString(2) }.getOrDefault(flow.raw)
-                    }
+                    val pretty = remember(flow) { flow.formattedRawJson() }
                     Surface(
                         shape = MaterialTheme.shapes.medium,
                         color = MaterialTheme.colorScheme.surfaceContainerLowest

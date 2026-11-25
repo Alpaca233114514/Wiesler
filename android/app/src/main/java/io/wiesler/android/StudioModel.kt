@@ -68,6 +68,30 @@ data class StudioFlow(
             val first = exitNode ?: return FlowRouting.UNKNOWN
             return if (first.equals("DIRECT", ignoreCase = true)) FlowRouting.DIRECT else FlowRouting.PROXY
         }
+
+    fun formattedRawJson(): String {
+        if (raw.isNotBlank()) {
+            return runCatching { JSONObject(raw).toString(2) }.getOrDefault(raw)
+        }
+        return JSONObject()
+            .put("id", id)
+            .put("start", start)
+            .put("app", app)
+            .put("host", host)
+            .put("source", source)
+            .put("destination", destination)
+            .put("protocol", protocol)
+            .put("chains", chainList)
+            .put("rule", rule)
+            .put("download", download)
+            .put("upload", upload)
+            .apply {
+                rx?.let { put("rxBytesPerSec", it) }
+                tx?.let { put("txBytesPerSec", it) }
+                event?.let { put("event", it) }
+            }
+            .toString(2)
+    }
 }
 
 data class StudioFrame(
@@ -184,8 +208,10 @@ class StudioSession {
         return (listOfNotNull(selected) + matches.filter { it.id != selected?.id }).take(6)
     }
 
-    fun graphHostGroups(maxGroups: Int = 6): List<StudioHostGroup> {
-        val matches = filtered()
+    fun graphHostGroups(maxGroups: Int = 6): List<StudioHostGroup> =
+        graphHostGroups(filtered(), maxGroups)
+
+    fun graphHostGroups(matches: List<StudioFlow>, maxGroups: Int = 6): List<StudioHostGroup> {
         val groups = groupByHost(matches)
         if (groups.size <= maxGroups) return groups
         val displayed = groups.take(maxGroups).toMutableList()
@@ -196,14 +222,14 @@ class StudioSession {
         return displayed
     }
 
-    fun rateHistory(upToCurrent: Boolean = true): Map<String, List<Rate?>> {
+    fun rateHistory(upToCurrent: Boolean = true, filterKeys: Set<String>? = null): Map<String, List<Rate?>> {
         val slice = if (upToCurrent && held != null) {
             val idx = frames.indexOf(held)
             if (idx >= 0) frames.subList(0, idx + 1) else listOfNotNull(held)
         } else {
             frames
         }
-        return computeRateHistory(slice)
+        return computeRateHistory(slice, filterKeys)
     }
 }
 
@@ -239,13 +265,16 @@ fun routePath(flow: StudioFlow): List<RouteNode> {
     return nodes
 }
 
-fun computeRateHistory(frames: List<StudioFrame>): Map<String, List<Rate?>> {
+fun computeRateHistory(frames: List<StudioFrame>, filterKeys: Set<String>? = null): Map<String, List<Rate?>> {
     if (frames.isEmpty()) return emptyMap()
+    if (filterKeys != null && filterKeys.isEmpty()) return emptyMap()
     val history = LinkedHashMap<String, Array<Rate?>>()
     frames.forEachIndexed { index, frame ->
         for (flow in frame.flows) {
             if (flow.rx == null && flow.tx == null) continue
-            val series = history.getOrPut(flow.flowKey) { arrayOfNulls(frames.size) }
+            val key = flow.flowKey
+            if (filterKeys != null && key !in filterKeys) continue
+            val series = history.getOrPut(key) { arrayOfNulls(frames.size) }
             series[index] = Rate(flow.rx ?: 0.0, flow.tx ?: 0.0)
         }
     }
@@ -264,6 +293,8 @@ fun parseStudioFlow(item: JSONObject): StudioFlow {
         .joinToString(" → ")
         .ifBlank { "未知" }
     val process = value("process").ifBlank { value("type").ifBlank { "未知应用" } }
+    // 不在 60 帧环缓冲中逐连接保存原始 JSON 字符串，避免数百连接下每秒制造数十 MB 堆垃圾。
+    // Avoid storing raw JSON strings per flow across 60 frames; synthesize on demand in the inspector.
     return StudioFlow(
         id = item.optString("id"),
         start = item.optString("start"),
@@ -282,7 +313,7 @@ fun parseStudioFlow(item: JSONObject): StudioFlow {
             .ifBlank { "未知" },
         download = item.optLong("download", -1),
         upload = item.optLong("upload", -1),
-        raw = item.toString()
+        raw = ""
     )
 }
 
