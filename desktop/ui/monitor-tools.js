@@ -252,8 +252,195 @@
     pollLoss(lossGeneration,targetIp);
   };
   $('loss-stop').onclick = () => stopLoss();
-  // 隐藏时停止，恢复由用户开启，避免把休眠间隔算成丢包。 / Stop hidden monitoring without inventing loss.
-  document.addEventListener('visibilitychange',()=>{if(document.hidden && lossRunning)stopLoss('窗口已隐藏，监控停止 · 点击开始重新采样');});
+  let rfRunning = false, rfGeneration = 0, rfTimer, rfBusy = false;
+  let controllerHealth = { connected: false, healthy: false, error: null };
 
-  window.MonitorTools = {appendRequestLog, discoverDatabases};
+  function currentLinkContext() {
+    const valid = lossSamples.filter(s => s.outcome === 'reply' || s.outcome === 'lost');
+    const replies = valid.filter(s => s.outcome === 'reply');
+    const lost = valid.length - replies.length;
+    const timings = replies.map(s => s.rtt_ms).filter(n => Number.isFinite(n) && n >= 0);
+    return {
+      icmp_sample_count: valid.length,
+      icmp_loss_percent: valid.length ? (100 * lost / valid.length) : null,
+      icmp_avg_rtt_ms: timings.length ? (timings.reduce((a, b) => a + b, 0) / timings.length) : null,
+      controller_connected: controllerHealth.connected,
+      controller_healthy: controllerHealth.healthy,
+      last_controller_error: controllerHealth.error
+    };
+  }
+
+  function renderRfReport(report) {
+    if (!$('rf-severity-badge')) return;
+    const badge = $('rf-severity-badge');
+    badge.textContent = report.severity_label || '待开始';
+    badge.setAttribute('data-tone',
+      report.severity === 'severe' || report.severity === 'interference' ? 'danger'
+        : report.severity === 'watch' ? 'warn'
+        : report.severity === 'clear' ? 'ok' : 'neutral'
+    );
+
+    const w = report.wifi || {};
+    $('rf-wifi-value').textContent = w.available
+      ? `${w.rssi_dbm != null ? `${w.rssi_dbm} dBm` : (w.signal_percent != null ? `${w.signal_percent}%` : '已连接')}${w.bottleneck ? ' · 瓶颈' : ' · 正常'}`
+      : '非 Wi-Fi';
+    $('rf-wifi-sub').textContent = w.summary || '未读取到本机 Wi-Fi 状态';
+
+    $('rf-adb-value').textContent = report.adb_connected
+      ? `新鲜 ${report.fresh_frames} · 去重 ${report.cached_duplicates}`
+      : '未连接 ADB';
+    $('rf-adb-sub').textContent = report.frozen_slots > 0
+      ? `检测到 ${report.frozen_slots} 张卡缓存冻结（已过滤重复帧）· ${report.adb_note}`
+      : (report.adb_note || '');
+
+    $('rf-score-value').textContent = report.slots?.length ? `${report.score} / 100` : '—';
+    $('rf-score-sub').textContent = report.slots?.length
+      ? `${report.assessment_title} · 剪刀差 ${report.scissors_alerts} · 失步 ${report.sync_loss_alerts} · 乒乓 ${report.pingpong_alerts}`
+      : (report.assessment_title || '等待双卡基带样本');
+
+    const slotsEl = $('rf-slots');
+    if (slotsEl) {
+      slotsEl.replaceChildren();
+      const slots = Array.isArray(report.slots) ? report.slots : [];
+      slotsEl.hidden = slots.length === 0;
+      for (const s of slots) {
+        const card = document.createElement('div');
+        card.className = 'rf-slot-card';
+        if (s.active_flags?.includes('RF_INTERFERENCE') || s.active_flags?.includes('RF_SYNC_LOSS')) {
+          card.dataset.tone = 'danger';
+        } else if (s.active_flags?.includes('CELL_PINGPONG') || s.cache_frozen) {
+          card.dataset.tone = 'warn';
+        }
+        const head = document.createElement('div');
+        head.className = 'rf-slot-head';
+        const title = document.createElement('strong');
+        title.textContent = `卡 ${s.phone_id + 1} · ${s.operator} · ${s.band}${s.carrier_aggregation ? ' CA' : ''}`;
+        const rat = document.createElement('span');
+        rat.className = 'rf-sub';
+        rat.textContent = s.in_service ? `${s.rat}${s.arfcn ? ` #${s.arfcn}` : ''}` : 'NO_SIGNAL';
+        head.append(title, rat);
+
+        const metrics = document.createElement('div');
+        metrics.className = 'rf-slot-metrics';
+        const corr = Number.isFinite(s.rsrp_sinr_corr) ? `r=${s.rsrp_sinr_corr.toFixed(2)}` : 'r=—';
+        metrics.textContent = `RSRP ${s.rsrp_dbm ?? '—'} dBm · RSRQ ${s.rsrq_db ?? '—'} dB · SINR ${s.sinr_db ?? '—'} dB · 60s切换 ${s.pingpong_60s} · ${corr}`;
+
+        card.append(head, metrics);
+        if (Array.isArray(s.active_flags) && s.active_flags.length) {
+          const flags = document.createElement('div');
+          flags.className = 'rf-flags';
+          flags.textContent = `告警：${s.active_flags.join(' / ')}`;
+          card.append(flags);
+        }
+        slotsEl.append(card);
+      }
+    }
+
+    const attr = report.attribution || {};
+    const box = $('rf-attribution-box');
+    if (box) {
+      box.dataset.cause = attr.cause || 'idle';
+      $('rf-attr-badge').textContent = `置信度 · ${attr.confidence || '—'}`;
+      $('rf-attr-title').textContent = attr.title || '等待三段对照采样';
+      $('rf-attr-detail').textContent = attr.detail || '';
+      $('rf-attr-suggestion').textContent = attr.suggestion ? `建议：${attr.suggestion}` : '';
+    }
+
+    const events = Array.isArray(report.recent_events) ? report.recent_events : [];
+    if ($('rf-events-count')) $('rf-events-count').textContent = String(events.length);
+    const evBox = $('rf-events');
+    if (evBox) {
+      evBox.replaceChildren();
+      if (!events.length) {
+        evBox.textContent = '尚无射频告警事件';
+      } else {
+        for (const ev of events.slice(0, 12)) {
+          const row = document.createElement('div');
+          row.className = 'rf-event-row';
+          const when = new Date(ev.observed_at_ms).toLocaleTimeString();
+          row.textContent = `${when} · [${ev.code}] ${ev.title} — ${ev.detail}`;
+          evBox.append(row);
+        }
+      }
+    }
+  }
+
+  function stopRf(message = '已停止') {
+    rfRunning = false;
+    rfGeneration++;
+    clearTimeout(rfTimer);
+    if ($('rf-start')) $('rf-start').disabled = false;
+    if ($('rf-stop')) $('rf-stop').disabled = true;
+    if ($('rf-severity-badge')) $('rf-severity-badge').textContent = message;
+  }
+
+  async function pollRf(token) {
+    if (!rfRunning || token !== rfGeneration) return;
+    if (rfBusy) {
+      rfTimer = setTimeout(() => pollRf(token), 400);
+      return;
+    }
+    rfBusy = true;
+    try {
+      const report = await invoke('rf_probe', { link: currentLinkContext() });
+      if (!rfRunning || token !== rfGeneration) return;
+      renderRfReport(report);
+    } catch (error) {
+      if (rfRunning && token === rfGeneration && $('rf-adb-sub')) {
+        $('rf-adb-sub').textContent = `监测失败：${error?.message || String(error)}`;
+      }
+    } finally {
+      rfBusy = false;
+      if (rfRunning && token === rfGeneration) {
+        rfTimer = setTimeout(() => pollRf(token), 3000);
+      }
+    }
+  }
+
+  if ($('rf-start')) {
+    $('rf-start').onclick = () => {
+      if (rfRunning) return;
+      if (!invoke) {
+        if ($('rf-adb-sub')) $('rf-adb-sub').textContent = '请在 Wiesler 桌面程序中启动射频监测';
+        return;
+      }
+      rfGeneration++;
+      rfRunning = true;
+      $('rf-start').disabled = true;
+      $('rf-stop').disabled = false;
+      $('rf-severity-badge').textContent = '采集中…';
+      pollRf(rfGeneration);
+    };
+  }
+  if ($('rf-stop')) {
+    $('rf-stop').onclick = () => stopRf('已停止');
+  }
+  if ($('rf-reset')) {
+    $('rf-reset').onclick = async () => {
+      if (invoke) {
+        try { await invoke('rf_reset'); } catch (_) {}
+      }
+      if ($('rf-slots')) { $('rf-slots').replaceChildren(); $('rf-slots').hidden = true; }
+      if ($('rf-events')) $('rf-events').textContent = '尚无射频告警事件';
+      if ($('rf-events-count')) $('rf-events-count').textContent = '0';
+      if ($('rf-score-value')) $('rf-score-value').textContent = '—';
+      if ($('rf-adb-value')) $('rf-adb-value').textContent = '已清空';
+    };
+  }
+
+  // 隐藏时停止，恢复由用户开启，避免把休眠间隔算成丢包或缓存冻结。 / Stop hidden monitoring without inventing loss or freeze.
+  document.addEventListener('visibilitychange',()=>{
+    if(document.hidden && lossRunning)stopLoss('窗口已隐藏，监控停止 · 点击开始重新采样');
+    if(document.hidden && rfRunning)stopRf('窗口已隐藏，已暂停');
+  });
+
+  function setControllerHealth(next) {
+    controllerHealth = {
+      connected: Boolean(next?.connected),
+      healthy: Boolean(next?.healthy),
+      error: next?.error || null
+    };
+  }
+
+  window.MonitorTools = {appendRequestLog, discoverDatabases, setControllerHealth};
 })();

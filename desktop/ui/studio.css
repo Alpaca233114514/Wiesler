@@ -2306,3 +2306,144 @@ details[open] > summary::after {
   * { transition: none !important; }
   .pulse { display: none !important; }
 }
+
+/* ==========================================================================
+   RF Contamination Monitoring & 3-Segment Attribution
+   ========================================================================== */
+.rf-monitor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rf-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rf-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.rf-stat {
+  background: var(--surface-inset);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rf-stat strong {
+  font-size: 16px;
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+.rf-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.rf-slots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+.rf-slot-card {
+  background: var(--surface-inset);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.rf-slot-card[data-tone="danger"] {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+.rf-slot-card[data-tone="warn"] {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+}
+.rf-slot-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.rf-slot-metrics {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.rf-flags {
+  font-size: 11.5px;
+  color: var(--danger);
+  font-weight: 500;
+}
+.rf-attribution {
+  background: var(--surface-inset);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rf-attribution[data-cause="CELLULAR_RF_POLLUTION"],
+.rf-attribution[data-cause="WIFI_HOTSPOT_BOTTLENECK"],
+.rf-attribution[data-cause="COMPOUND_FAULT"] {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+.rf-attribution[data-cause="PROXY_OR_EGRESS"],
+.rf-attribution[data-cause="UPSTREAM_LINK"] {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+}
+.rf-attribution[data-cause="HEALTHY"] {
+  border-color: var(--mint);
+  background: var(--mint-soft);
+}
+.rf-attr-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rf-suggestion {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.rf-events {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.rf-event-row {
+  padding: 6px 8px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-inset);
+  border: 1px solid var(--line);
+}
+#rf-severity-badge[data-tone="danger"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+#rf-severity-badge[data-tone="warn"] {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+#rf-severity-badge[data-tone="ok"] {
+  background: var(--mint-soft);
+  color: var(--mint);
+}
+@container (max-width: 720px) {
+  .rf-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -233,6 +233,57 @@
           </div>
         </section>
 
+        <section class="panel rf-monitor" aria-labelledby="rf-title">
+          <div class="panel-head">
+            <div>
+              <h3 id="rf-title">射频污染监测与三段归因</h3>
+              <span class="panel-sub">本机 Wi-Fi RSSI · ADB 手机双卡基带 · 三段联合归因</span>
+            </div>
+            <div class="rf-actions">
+              <span id="rf-severity-badge" class="state-pill" data-tone="neutral" role="status">待开始</span>
+              <button id="rf-start" type="button" class="btn-primary">开始监测</button>
+              <button id="rf-stop" type="button" class="btn-subtle" disabled>停止</button>
+              <button id="rf-reset" type="button" class="btn-subtle">清空</button>
+            </div>
+          </div>
+
+          <div class="rf-grid">
+            <div class="rf-stat">
+              <span class="loss-stat-label">本机 Wi-Fi 无线段</span>
+              <strong id="rf-wifi-value">—</strong>
+              <span id="rf-wifi-sub" class="rf-sub">点击开始读取本机 Wi-Fi RSSI / 信道</span>
+            </div>
+            <div class="rf-stat">
+              <span class="loss-stat-label">ADB 手机双卡与防冻结</span>
+              <strong id="rf-adb-value">未采样</strong>
+              <span id="rf-adb-sub" class="rf-sub">支持 USB/无线 ADB 旁路读取基带并按时间戳去重</span>
+            </div>
+            <div class="rf-stat">
+              <span class="loss-stat-label">多卡污染评分器</span>
+              <strong id="rf-score-value">—</strong>
+              <span id="rf-score-sub" class="rf-sub">剪刀差 / 底板失步 / 60s 乒乓 / 双卡并发</span>
+            </div>
+          </div>
+
+          <div id="rf-slots" class="rf-slots" hidden></div>
+
+          <div id="rf-attribution-box" class="rf-attribution" data-cause="idle">
+            <div class="rf-attr-head">
+              <span id="rf-attr-badge" class="state-pill">三段归因</span>
+              <strong id="rf-attr-title">等待三段对照采样</strong>
+            </div>
+            <p id="rf-attr-detail">开启射频监测并配合下方 ICMP 丢包探测或 Mihomo 控制器连接，可区分本机 Wi-Fi 热点瓶颈、手机蜂窝空口污染与代理出口故障。</p>
+            <p id="rf-attr-suggestion" class="rf-suggestion"></p>
+          </div>
+
+          <details class="privacy-options">
+            <summary>近期射频与协议栈告警事件（<span id="rf-events-count">0</span>）</summary>
+            <div class="details-body">
+              <div id="rf-events" class="rf-events">尚无射频告警事件</div>
+            </div>
+          </details>
+        </section>
+
         <section class="panel packet-loss" aria-labelledby="loss-title">
           <div class="panel-head">
             <div>
