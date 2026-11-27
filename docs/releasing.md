@@ -9,11 +9,19 @@ Rust 固定 1.97.1，并使用两个 Cargo.lock；Android 沿用 Gradle Wrapper 
 ## 发布顺序
 
 1. 修改版本并通过 `python scripts/check-release-version.py`，功能分支提交 PR，完成 Review 和 CI 后正常合并。
-2. 从合并后的 main 成功运行下载两个 unsigned artifact，记录运行 URL 和源码提交。不要混用不同提交的产物。
-3. 在持有私钥的 Windows 机器用 `scripts/sign-release.ps1` 签名和验证：Windows 使用现有不可导出的 CurrentUser 代码签名证书，Android 使用独立正式发布 keystore。私钥与密码留在本机用户私有目录，不进入 CI artifact、源码或日志。
-4. 检查签名报告、ZIP 内容、CLI 版本和桌面启动；给同一提交打 `v0.1.0` 标签，创建 GitHub prerelease，上传 ZIP、APK、公开证书和签名报告。
+2. 选择以下任一种签名路径（二者执行一致的签名验证基线，输出相同的 `signature-report.json` 与公开 `.cer` 证书）：
+   - **路径 A：GitHub Actions 隔离签名工作流（`.github/workflows/sign-release.yml`）**
+     - 在仓库 **Settings -> Environments** 创建受保护环境 `release-signing`（建议启用 Required reviewers 人工审批门禁），并按需配置环境级 Secret：
+       - Windows：`WINDOWS_SIGN_PFX_BASE64`（可导出代码签名 `.pfx` 的 Base64）、`WINDOWS_SIGN_PFX_PASSWORD`（PFX 口令）。
+       - Android：`ANDROID_KEYSTORE_BASE64`（`release.p12` / `.jks` 的 Base64）、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`（可选，默认 `wiesler-release`）、`ANDROID_KEY_PASSWORD`（可选，默认同 keystore 密码）。
+     - 手动触发 **Sign and Publish Release**（`workflow_dispatch`），选择目标分支或已有 tag，按需勾选 `sign_windows`、`sign_android`、`allow_self_signed_windows`、`publish_release`、`prerelease`。
+     - 构建任务（`build-windows` / `build-android`）不接入 `release-signing` 环境，无法读取密钥；签名任务（`sign-windows` / `sign-android`）在独立 job 中完成签名与校验并立即清理内存/临时证书，随后由 `publish-signed-release` 生成 `signature-report.json`、`SHA256SUMS.txt` 与 Sigstore provenance attestation（`actions/attest-build-provenance@v4`），并在勾选 `publish_release` 时创建或更新 GitHub Release。
+   - **路径 B：本机离线签名（`scripts/sign-release.ps1`）**
+     - 当 Windows 证书不可导出（如本机 `CurrentUser\My` 中的不可导出证书）或不希望将密钥托管至 GitHub Secrets 时，从合并后的 `main` 成功运行下载 `Package` 的两个 unsigned artifact，记录运行 URL 和源码提交。不要混用不同提交的产物。
+     - 在持有私钥的 Windows 机器运行 `scripts/sign-release.ps1` 签名和验证（版本号自动读取 `Cargo.toml`，也可通过 `-Version` 指定）。私钥与密码留在本机用户私有目录，不进入 CI artifact、源码或日志。
+     - 检查签名报告、ZIP 内容、CLI 版本和桌面启动；给同一提交打版本 tag，上传 ZIP、APK、公开证书和签名报告。
 
-签名机是有意保留的发布步骤：本机 Windows 证书不可导出，CI 无法使用它。CI 不持有发布密钥，也不会在缺少签名时自动开 Release。后续可另行配置可信代码签名服务。
+签名密钥绝不放进源码、日志、命令行参数或 CI artifact：`scripts/sign-windows-ci.ps1` 在内存中解包 PFX 导入临时用户库并用 `/sha1` 签名，结束后删除证书与私钥容器；Android 签名全程通过 `env:` / `-storepass:env` 传参并在结束时清除临时 keystore。后续也可接入 Azure Artifact Signing 等云 HSM 签名服务。
 
 Windows 自签名不等于系统默认信任。验证必须检查文件摘要和签名者；仅允许预期自签名的“不受信任根”状态，其他错误阻断发布。不得通过安装根证书或关闭 SmartScreen 来伪造验证成功。
 
