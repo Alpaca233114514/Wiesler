@@ -95,6 +95,10 @@
           <div class="graph-toolbar">
             <h1 class="view-title">连接图谱 <span id="flow-count">0</span></h1>
             <div class="graph-tools">
+              <div class="segmented-tools" role="group" aria-label="目标归并方式">
+                <button id="group-mode-site" type="button" aria-pressed="true" title="将 CDN 与子域名映射并归并为网站/服务">按网站</button>
+                <button id="group-mode-host" type="button" aria-pressed="false" title="按原始抓包域名逐项展示">按域名</button>
+              </div>
               <button id="freeze" type="button" class="btn-subtle">冻结</button>
               <div class="segmented-tools" role="group" aria-label="图谱缩放">
                 <button id="zoom-out" type="button" aria-label="缩小图谱">−</button>
@@ -146,7 +150,7 @@
           <div class="flows-heading">
             <h2 id="sessions-title">活跃会话</h2>
             <div class="filters">
-              <input id="flow-search" type="search" aria-label="搜索应用或目标" placeholder="搜索进程、域名、IP 或规则…">
+              <input id="flow-search" type="search" aria-label="搜索应用或目标" placeholder="搜索进程、网站、域名、IP 或规则…">
               <select id="flow-source" aria-label="筛选连接来源">
                 <option value="">全部来源</option>
                 <option value="direct">DIRECT 直连</option>
@@ -548,6 +552,7 @@
   </main>
 
   <script src="window-chrome.js"></script>
+  <script src="site-dictionary.js"></script>
   <script src="studio-model.js"></script>
   <script src="privacy-model.js"></script>
   <script src="monitor-tools.js"></script>

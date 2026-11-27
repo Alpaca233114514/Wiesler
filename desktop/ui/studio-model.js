@@ -1,5 +1,7 @@
 (function(root) {
   'use strict';
+  const siteDict = root.SiteDictionary || (typeof require === 'function' ? (() => { try { return require('./site-dictionary.js'); } catch (_) { return null; } })() : null);
+  const resolveSite = host => siteDict?.resolveSite ? siteDict.resolveSite(host) : null;
   const number = n => Number.isFinite(Number(n)) && Number(n) >= 0 ? Number(n) : 0;
   const endpoint = (host, port) => `${String(host).includes(':') ? `[${host}]` : host}:${port || '?'}`;
   const processName = name => typeof name==='string'&&!['','unknown','未知进程'].includes(name.trim().toLowerCase())?name.trim():null;
@@ -10,11 +12,13 @@
   };
   function normalize(raw) {
     const m = raw.metadata || {}, value = (a,b) => m[a] ?? m[b];
-    const host = m.host || value('destination_ip','destinationIP') || '未知目标';
+    const host = m.host || value('sniff_host','sniffHost') || value('destination_ip','destinationIP') || '未知目标';
+    const site = resolveSite(host);
     const process=processName(m.process),pid=Number(m.pid)>0?Number(m.pid):'未知';
     return {id:String(raw.id), start:raw.start || '', app:process || (pid==='未知'?'进程待识别':`PID ${pid}`), pid,
       processSource:process?'controller':null,
-      host, destination:endpoint(value('destination_ip','destinationIP') || host,value('destination_port','destinationPort')),
+      host, site, siteName:site?.name || null, siteUrl:site?.url || null, siteCategory:site?.category || null,
+      destination:endpoint(value('destination_ip','destinationIP') || host,value('destination_port','destinationPort')),
       source:endpoint(value('source_ip','sourceIP') || '未知',value('source_port','sourcePort')),
       port:value('destination_port','destinationPort') || '?', protocol:(m.network || '未知').toUpperCase(),
       route:(raw.chains || []).join(' → ') || '未知', rule:raw.rule || '未知',
@@ -22,14 +26,24 @@
       download:number(raw.download), upload:number(raw.upload), raw};
   }
   function systemFlow(socket) {
+    const site = resolveSite(socket.remote_ip);
     return {id:`system:${socket.pid}:${socket.process_started_at || ''}:${socket.local_ip}:${socket.local_port}:${socket.remote_ip}:${socket.remote_port}`,
       start:'', app:processName(socket.process) || `PID ${socket.pid}`, processSource:processName(socket.process)?'windows-socket':null, pid:socket.pid, host:socket.remote_ip,
+      site, siteName:site?.name || null, siteUrl:site?.url || null, siteCategory:site?.category || null,
       destination:endpoint(socket.remote_ip,socket.remote_port),source:endpoint(socket.local_ip,socket.local_port),
       port:socket.remote_port,protocol:'TCP',route:'系统连接 · 路由待确认',rule:'—',origin:'system',routing:'unknown',
       download:null,upload:null,rx:null,tx:null,raw:socket};
   }
   const hostKey = flow => flow.host.toLowerCase().replace(/\.$/,'');
+  const siteGroupKey = flow => flow.site ? `site:${flow.site.id}` : `host:${hostKey(flow)}`;
   const flowKey = flow => JSON.stringify([flow.id,flow.start]);
+  function matchesQuery(flow, rawQuery) {
+    const q = String(rawQuery || '').trim().toLowerCase();
+    if (!q) return true;
+    const fields = [flow.app, flow.host, flow.destination, flow.source, flow.route, flow.rule,
+      flow.siteName, flow.siteUrl, flow.siteCategory, ...(flow.site?.aliases || [])];
+    return fields.some(v => v && String(v).toLowerCase().includes(q));
+  }
   function rateHistory(frames) {
     const history=new Map();
     frames.forEach((frame,index)=>{
@@ -46,10 +60,24 @@
     const groups=new Map();
     for(const flow of flows){
       const key=hostKey(flow);
-      if(!groups.has(key))groups.set(key,{key,label:flow.host,flows:[]});
+      if(!groups.has(key))groups.set(key,{key,label:flow.host,site:null,hosts:[flow.host],flows:[]});
       groups.get(key).flows.push(flow);
     }
     return [...groups.values()];
+  }
+  function groupBySite(flows) {
+    const groups=new Map();
+    for(const flow of flows){
+      const key=siteGroupKey(flow);
+      if(!groups.has(key)){
+        groups.set(key,{key,label:flow.site ? flow.site.name : flow.host,site:flow.site || null,hosts:[],hostSet:new Set(),flows:[]});
+      }
+      const group=groups.get(key);
+      const hk=hostKey(flow);
+      if(!group.hostSet.has(hk)){group.hostSet.add(hk);group.hosts.push(flow.host);}
+      group.flows.push(flow);
+    }
+    return [...groups.values()].map(({hostSet, ...rest}) => rest);
   }
   function routePath(flow) {
     const nodes=[{kind:'computer',label:'电脑',detail:`${flow.app} · ${flow.source}`}];
@@ -57,7 +85,8 @@
       // 控制器从出口向外追加策略组，展示时反向展开。 / Reverse the controller's leaf-first logical chain.
       for(const name of [...(flow.raw.chains || [])].reverse())nodes.push({kind:'route',label:name,detail:`逻辑路由节点 · ${name}`});
     }else if(flow.routing!=='direct')nodes.push({kind:'unknown',label:'路由待确认',detail:'系统连接表没有代理路径证据'});
-    nodes.push({kind:'server',label:'服务器',detail:`${flow.host} · ${flow.destination}`});
+    const targetDetail = flow.siteName ? `${flow.siteName} (${flow.host}) · ${flow.destination}` : `${flow.host} · ${flow.destination}`;
+    nodes.push({kind:'server',label:'服务器',detail:targetDetail});
     return nodes;
   }
   function mergeSources(controller, system, systemError = null) {
@@ -102,7 +131,7 @@
       download, upload, rx:valid ? (download-previous.download)/dt : null,
       tx:valid ? (upload-previous.upload)/dt : null};
   }
-  const api = {endpoint, bytes, normalize, frame, systemFlow, mergeSources, hostKey, groupByHost, routePath, flowKey, rateHistory};
+  const api = {endpoint, bytes, normalize, frame, systemFlow, mergeSources, hostKey, siteGroupKey, groupByHost, groupBySite, matchesQuery, resolveSite, routePath, flowKey, rateHistory};
   if (typeof module !== 'undefined') module.exports = api;
   root.StudioModel = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

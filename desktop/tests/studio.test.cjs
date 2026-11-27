@@ -3,6 +3,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 const M=require('../ui/studio-model.js');
+const SiteDictionary=require('../ui/site-dictionary.js');
 const {snapshot}=require('./snapshot-fixture.cjs');
 
 test('per-flow rates rebaseline new identities, gaps and counter rollbacks',()=>{
@@ -29,7 +30,7 @@ function setup(invoke, discovery = async()=>({controllers:[],scanned:0}), system
   }
   const elements=new Map(),get=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
   const timers=new Map();let timerId=0;
-  const window={StudioModel:M,PrivacyModel:require('../ui/privacy-model.js'),innerWidth:1360,addEventListener(){},matchMedia:()=>({matches:false}),__TAURI__:invoke?{core:{invoke:(command,args)=>command==='discover_controllers'?discovery():command==='system_snapshot'?system():command==='egress_address'?egress(args):command==='discover_databases'?databases(args):invoke(command,args)}}:null};
+  const window={SiteDictionary,StudioModel:M,PrivacyModel:require('../ui/privacy-model.js'),innerWidth:1360,addEventListener(){},matchMedia:()=>({matches:false}),__TAURI__:invoke?{core:{invoke:(command,args)=>command==='discover_controllers'?discovery():command==='system_snapshot'?system():command==='egress_address'?egress(args):command==='discover_databases'?databases(args):invoke(command,args)}}:null};
   const listeners={};
   const context=vm.createContext({window,document:{hidden:false,getElementById:get,createElement:()=>new Element(),createElementNS:()=>new Element(),querySelectorAll:()=>[],addEventListener:(event,fn)=>{(listeners[event] ||= []).push(fn);}},setTimeout:(fn,delay)=>{timers.set(++timerId,{fn,delay});return timerId;},clearTimeout:id=>timers.delete(id)});
   vm.runInContext(fs.readFileSync('desktop/ui/monitor-tools.js','utf8'),context);
@@ -563,6 +564,51 @@ test('inspector height stays locked to graph panel and preserves scroll across l
   assert.equal(ui.get('inspect-content').scrollTop,140);
   ui.get('flow-rows').children[1].children[0].children[0].onclick();
   assert.equal(ui.get('inspect-content').scrollTop,0);
+});
+
+test('site dictionary maps CDN subdomains with longest-suffix precedence and respects boundaries',()=>{
+  assert.equal(SiteDictionary.resolveSite('i0.hdslb.com')?.name,'哔哩哔哩');
+  assert.equal(SiteDictionary.resolveSite('UPOS-SZ.BILIVIDEO.COM.')?.url,'bilibili.com');
+  assert.equal(SiteDictionary.resolveSite('weixin.qq.com')?.name,'微信');
+  assert.equal(SiteDictionary.resolveSite('mmbiz.qpic.cn')?.name,'微信');
+  assert.equal(SiteDictionary.resolveSite('a.qpic.cn')?.name,'腾讯 / QQ');
+  assert.equal(SiteDictionary.resolveSite('rr3---sn-abc.googlevideo.com')?.name,'YouTube');
+  assert.equal(SiteDictionary.resolveSite('youtubei.googleapis.com')?.name,'YouTube');
+  assert.equal(SiteDictionary.resolveSite('aicode.googleapis.com')?.name,'Google AI / Gemini');
+  assert.equal(SiteDictionary.resolveSite('1.1.1.1')?.name,'Cloudflare DNS');
+  assert.equal(SiteDictionary.resolveSite('notgithub.com'),null);
+  assert.equal(SiteDictionary.resolveSite('example.com'),null);
+  assert.equal(SiteDictionary.resolveSite('203.0.113.10'),null);
+  const sniffed=M.normalize({id:'sniff',metadata:{host:'',sniffHost:'i0.hdslb.com',destinationIP:'203.0.113.5',destinationPort:443,network:'tcp'}});
+  assert.equal(sniffed.host,'i0.hdslb.com');
+  assert.equal(sniffed.siteName,'哔哩哔哩');
+});
+
+test('graph folds CDN subdomains into one website node by default, supports raw host toggle and alias search',async()=>{
+  const raw={observed_at:1000,http_status:200,download_total:0,upload_total:0,connections:[
+    {id:'b1',download:1000,upload:100,rule:'DomainSuffix',chains:['DIRECT'],metadata:{process:'chrome.exe',pid:10,network:'tcp',host:'i0.hdslb.com',source_ip:'127.0.0.1',source_port:50001,destination_ip:'203.0.113.1',destination_port:443}},
+    {id:'b2',download:2000,upload:200,rule:'DomainSuffix',chains:['DIRECT'],metadata:{process:'chrome.exe',pid:10,network:'tcp',host:'api.bilibili.com',source_ip:'127.0.0.1',source_port:50002,destination_ip:'203.0.113.2',destination_port:443}},
+    {id:'y1',download:3000,upload:300,rule:'DomainSuffix',chains:['JP-01'],metadata:{process:'chrome.exe',pid:10,network:'tcp',host:'',sniffHost:'rr1.googlevideo.com',source_ip:'127.0.0.1',source_port:50003,destination_ip:'203.0.113.3',destination_port:443}}
+  ]};
+  const ui=setup(async()=>raw);connect(ui);await flush();
+  const siteNodes=ui.get('nodes').children.filter(n=>n.attrs['data-key']?.startsWith('site:'));
+  assert.equal(siteNodes.length,2);
+  assert.match(ui.content(siteNodes[0]),/哔哩哔哩.*bilibili\.com · 2 域名 · 2 连接/);
+  assert.match(ui.content(siteNodes[1]),/YouTube.*rr1\.googlevideo\.com/);
+  assert.equal(ui.get('selection-title').textContent,'哔哩哔哩');
+  assert.match(ui.get('selection-endpoint').textContent,/bilibili\.com · i0\.hdslb\.com/);
+  assert.equal(ui.get('group-session').hidden,false);
+  assert.equal(ui.get('group-session').children.length,2);
+  assert.match(ui.content(ui.get('inspect-content')),/所属网站.*哔哩哔哩.*原始域名.*i0\.hdslb\.com/);
+  ui.get('group-mode-host').onclick();
+  assert.equal(ui.get('group-mode-host').attrs['aria-pressed'],'true');
+  const hostNodes=ui.get('nodes').children.filter(n=>n.attrs['data-key']?.startsWith('host:'));
+  assert.equal(hostNodes.length,3);
+  assert.equal(ui.get('group-session').hidden,true);
+  ui.get('group-mode-site').onclick();
+  ui.get('flow-search').value='油管';ui.get('flow-search').oninput();
+  assert.equal(ui.get('flow-count').textContent,'1');
+  assert.equal(ui.get('selection-title').textContent,'YouTube');
 });
 
 async function setupWithSamples(){

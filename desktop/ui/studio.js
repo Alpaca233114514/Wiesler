@@ -5,7 +5,7 @@
   const invoke = window.__TAURI__?.core?.invoke;
   let frames = [], current = null, selected = null, tab = 'overview', lastInspectKey = '';
   let frozen = false, replay = null, timer, generation = 0, liveBusy = false;
-  let collecting = false, activeController = '', view = 'graph', rebaseline = false;
+  let collecting = false, activeController = '', view = 'graph', rebaseline = false, groupMode = 'site';
   let systemCurrent = null, systemError = null, systemBusy = false, systemTimer, controllerFrame = null;
   let egressGeneration = 0, replayFrames = null, animationEnabled = true;
   let discovering = false, scanPromise = null, discoveryMessage = '';
@@ -16,7 +16,7 @@
   function shown() {return replay || current;}
   function visible() {
     const q=$('flow-search').value.trim().toLowerCase(), protocol=$('flow-protocol').value, source=$('flow-source').value;
-    return (shown()?.flows || []).filter(f => (!source || (source==='system'?f.origin==='system':f.routing===source)) && (!protocol || protocol===f.protocol) && [f.app,f.host,f.destination,f.source,f.route].some(v=>v.toLowerCase().includes(q)));
+    return (shown()?.flows || []).filter(f => (!source || (source==='system'?f.origin==='system':f.routing===source)) && (!protocol || protocol===f.protocol) && M.matchesQuery(f, q));
   }
   function accept(next) {
     current=next;frames.push(next);if(frames.length>60)frames.shift();
@@ -398,7 +398,8 @@
     $('edges').replaceChildren();$('nodes').replaceChildren();
     const activePulses=new Set(),animate=!frozen&&!replay&&!document.hidden&&animationEnabled&&!rebaseline&&(collecting);
     $('graph-empty').hidden=flows.length>0;
-    const groups=M.groupByHost(flows), selectedFlow=flows.find(f=>f.id===selected);
+    const groups=groupMode==='site'?M.groupBySite(flows):M.groupByHost(flows), selectedFlow=flows.find(f=>f.id===selected);
+    const nodeKey=group=>groupMode==='site'?group.key:`host:${group.key}`;
     const displayed=groups.slice(0,6), selectedGroup=groups.find(g=>g.flows.some(f=>f.id===selected));
     if(selectedGroup&&!displayed.includes(selectedGroup))displayed[5]=selectedGroup;
     const drawn=displayed.flatMap(g=>g.flows), names=[...new Set(drawn.map(f=>f.app))];
@@ -413,14 +414,22 @@
     const slotY=(i,count)=>count<=1?height/2:46+i*(height-86)/(count-1);
     buckets.forEach((bucket,i)=>nodes.push({key:bucket.key,label:bucket.label,sub:`${bucket.flows.length} 条连接`,app:true,
       id:leader(bucket.flows).id,x:appWidth/2+(compact?12:24),y:slotY(i,buckets.length)}));
-    displayed.forEach((group,i)=>nodes.push({key:`host:${group.key}`,label:group.label,
-      sub:group.flows.length>1?`${group.flows.length} 条连接 · ${new Set(group.flows.map(f=>f.port)).size} 个端口`:`${group.flows[0].protocol} :${group.flows[0].port}`,
-      count:group.flows.length,id:leader(group.flows).id,flows:group.flows,
-      x:width-targetWidth/2-(compact?12:24),y:slotY(i,displayed.length)}));
+    displayed.forEach((group,i)=>{
+      const hosts=group.hosts || [group.label];
+      const sub=group.site
+        ?(hosts.length>1?`${group.site.url} · ${hosts.length} 域名 · ${group.flows.length} 连接`
+          :group.flows.length>1?`${hosts[0]} · ${group.flows.length} 连接`
+          :`${hosts[0]} · :${group.flows[0].port}`)
+        :(group.flows.length>1?`${group.flows.length} 条连接 · ${new Set(group.flows.map(f=>f.port)).size} 个端口`:`${group.flows[0].protocol} :${group.flows[0].port}`);
+      nodes.push({key:nodeKey(group),label:group.label,sub,
+        tooltip:group.site?`${group.label} (${group.site.url}) · ${hosts.join(', ')}`:group.label,
+        count:group.flows.length,id:leader(group.flows).id,flows:group.flows,
+        x:width-targetWidth/2-(compact?12:24),y:slotY(i,displayed.length)});
+    });
     nodes.forEach(n=>{const p=positions.get(n.key);if(p)Object.assign(n,p);});
     for(const group of displayed)for(const bucket of buckets){
       const members=group.flows.filter(f=>appKey(f.app)===bucket.key);if(!members.length)continue;
-      const f=leader(members),a=nodes.find(n=>n.key===bucket.key),b=nodes.find(n=>n.key===`host:${group.key}`);
+      const f=leader(members),a=nodes.find(n=>n.key===bucket.key),b=nodes.find(n=>n.key===nodeKey(group));
       const aw=appWidth/2,bw=targetWidth/2;
       const bend=Math.min(80,Math.max(0,(b.x-bw-a.x-aw)/2));
       const d=`M ${a.x+aw} ${a.y} C ${a.x+aw+bend} ${a.y},${b.x-bw-bend} ${b.y},${b.x-bw} ${b.y}`;
@@ -447,7 +456,7 @@
       if(n.count>1)for(const offset of [5,2.5])group.append(svg('rect',{x:-w/2+offset,y:-h/2+offset,width:w,height:h,rx:8,class:'stack-layer'}));
       const rect=svg('rect',{x:-w/2,y:-h/2,width:w,height:h,rx:8,class:'node-card'});
       const accent=svg('rect',{x:-w/2+5,y:-10,width:2.5,height:20,rx:1.25,class:'node-accent'});
-      const title=svg('title',{});title.textContent=n.label;
+      const title=svg('title',{});title.textContent=n.tooltip || n.label;
       const label=svg('text',{x:-w/2+14,y:-3});label.textContent=n.label.length>(compact?15:28)?n.label.slice(0,compact?13:26)+'…':n.label;
       const sub=svg('text',{x:-w/2+14,y:13,class:'node-sub'});sub.textContent=n.sub+(warning?' · 超时':'');
       group.append(rect,accent,label,sub,svg('circle',{cx:n.app?w/2:-w/2,cy:0,r:4,class:'port'}),title);
@@ -470,6 +479,15 @@
   $('zoom-in').onclick=()=>{scale=Math.min(2,scale+.15);transform();};
   $('zoom-out').onclick=()=>{scale=Math.max(.55,scale-.15);transform();};
   $('fit').onclick=()=>{scale=1;pan={x:0,y:0};positions.clear();render();};
+  function setGroupMode(mode){
+    if(groupMode===mode)return;
+    groupMode=mode;positions.clear();
+    $('group-mode-site')?.setAttribute('aria-pressed',String(mode==='site'));
+    $('group-mode-host')?.setAttribute('aria-pressed',String(mode==='host'));
+    render();
+  }
+  if($('group-mode-site'))$('group-mode-site').onclick=()=>setGroupMode('site');
+  if($('group-mode-host'))$('group-mode-host').onclick=()=>setGroupMode('host');
   function routeStrip(flow){
     const nodes=M.routePath(flow),strip=text('ol','',`route-strip ${flow.routing}${nodes.length>3?' multi-hop':''}`);
     strip.setAttribute('aria-label',`${flow.routing==='direct'?'直连':'逻辑路由'}：${nodes.map(n=>n.label).join(' → ')}`);
@@ -507,10 +525,11 @@
     for(const f of flows.slice(0,200)){
       const tr=text('tr','',f.id===selected?'selected':'');
       const app=document.createElement('td'),target=document.createElement('td'),traffic=text('td','','session-rates'),trend=text('td','','trend-cell');
-      for(const [cell,value] of [[app,f.app],[target,f.host]]){
-        const button=text('button',value);button.title=value;button.onclick=()=>choose(f.id);cell.append(button);
+      const targetLabel=f.siteName || f.host;
+      for(const [cell,value,hint] of [[app,f.app,f.app],[target,targetLabel,f.siteName?`${f.siteName} (${f.siteUrl}) · ${f.host}`:f.host]]){
+        const button=text('button',value);button.title=hint;button.onclick=()=>choose(f.id);cell.append(button);
       }
-      const endpoint=text('span',`${f.protocol} · :${f.port}`,'session-endpoint');endpoint.title=f.destination;target.append(endpoint);
+      const endpoint=text('span',f.siteName?`${f.host} · ${f.protocol} :${f.port}`:`${f.protocol} · :${f.port}`,'session-endpoint');endpoint.title=f.destination;target.append(endpoint);
       for(const [direction,value] of [['↓',f.rx],['↑',f.tx]]){
         const rate=text('span',`${direction} ${value==null?'—':M.bytes(value)}`);rate.title=`${direction==='↓'?'下载':'上传'} ${value==null?'无计数':M.bytes(value)+'/s'}`;traffic.append(rate);
       }
@@ -522,12 +541,13 @@
     if(flows.length>200){const tr=document.createElement('tr'),td=text('td',`显示前 200 / ${flows.length} 条，请搜索缩小范围`);td.colSpan=4;tr.append(td);$('flow-rows').append(tr);}
   }
   function renderInspector(f){
-    $('selection-title').textContent=f?.host || '选择一条连接';
-    $('selection-endpoint').textContent=f?.destination || '';
+    $('selection-title').textContent=f ? (f.siteName || f.host) : '选择一条连接';
+    $('selection-endpoint').textContent=f ? (f.siteName ? `${f.siteUrl} · ${f.host} · ${f.destination}` : f.destination) : '';
     $('selection-protocol').textContent=f?.protocol || '—';
-    const peers=f?visible().filter(peer=>M.hostKey(peer)===M.hostKey(f)):[];
+    const peers=f?visible().filter(peer=>groupMode==='site'?M.siteGroupKey(peer)===M.siteGroupKey(f):M.hostKey(peer)===M.hostKey(f)):[];
+    const multiHostPeers=new Set(peers.map(M.hostKey)).size>1;
     $('group-session').replaceChildren();$('group-session').hidden=peers.length<2;
-    for(const peer of peers){const option=text('option',`${peer.app} · ${peer.protocol} :${peer.port} · ${peer.source}`);option.value=peer.id;$('group-session').append(option);}
+    for(const peer of peers){const option=text('option',multiHostPeers?`${peer.app} · ${peer.host} :${peer.port}`:`${peer.app} · ${peer.protocol} :${peer.port} · ${peer.source}`);option.value=peer.id;$('group-session').append(option);}
     $('group-session').value=f?.id || '';
     const body=$('inspect-content');
     const inspectKey=`${f?.id || ''}|${tab}`;
@@ -546,7 +566,10 @@
     else {
       nodes.push(routeStrip(f));
       const dl=document.createElement('dl');
-      for(const [k,v] of Object.entries({'来源':f.origin==='system'?'系统 TCP（路由待确认）':f.routing==='direct'?'Mihomo · DIRECT 直连':'Mihomo · '+(f.routing==='proxy'?'代理转发':'路由待确认'),'应用':`${f.app} · PID ${f.pid}`,'进程依据':f.processSource==='windows-pid'?'Windows 进程表（PID）':f.processSource==='windows-socket'?'Windows 连接所属进程':f.processSource==='windows-udp'?'Windows UDP 端点所属进程':f.processSource==='controller'?'控制器报告':'未提供 PID 或无法唯一匹配系统连接','源地址':f.source,'匹配规则':f.rule,'观测状态':f.origin==='system'?'已建立 · 无逐连接流量计数':f.rx===null?'等待连续快照':f.rx+f.tx>0?'有流量增量':'本次无流量增量'})){dl.append(text('dt',k),text('dd',v));}nodes.push(dl);
+      const rows={'来源':f.origin==='system'?'系统 TCP（路由待确认）':f.routing==='direct'?'Mihomo · DIRECT 直连':'Mihomo · '+(f.routing==='proxy'?'代理转发':'路由待确认')};
+      if(f.siteName){rows['所属网站']=`${f.siteName}（${f.siteUrl} · ${f.siteCategory}）`;rows['原始域名']=f.host;}
+      Object.assign(rows,{'应用':`${f.app} · PID ${f.pid}`,'进程依据':f.processSource==='windows-pid'?'Windows 进程表（PID）':f.processSource==='windows-socket'?'Windows 连接所属进程':f.processSource==='windows-udp'?'Windows UDP 端点所属进程':f.processSource==='controller'?'控制器报告':'未提供 PID 或无法唯一匹配系统连接','源地址':f.source,'匹配规则':f.rule,'观测状态':f.origin==='system'?'已建立 · 无逐连接流量计数':f.rx===null?'等待连续快照':f.rx+f.tx>0?'有流量增量':'本次无流量增量'});
+      for(const [k,v] of Object.entries(rows)){dl.append(text('dt',k),text('dd',v));}nodes.push(dl);
       const pair=text('div','','traffic-pair');
       for(const [label,v] of [['累计下载',f.download],['累计上传',f.upload]]){const cell=document.createElement('div');cell.append(text('span',label),text('strong',M.bytes(v)));pair.append(cell);}nodes.push(pair);
     }

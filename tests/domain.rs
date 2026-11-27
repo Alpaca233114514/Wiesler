@@ -78,6 +78,16 @@ fn parses_mihomo_ports_optional_metadata_and_filters_private_fields() {
             .host
             .is_none()
     );
+    let sniffed = br#"{"connections":[{"id":"s1","upload":0,"download":0,"metadata":{"host":"","sniffHost":"i0.hdslb.com","destinationIP":"203.0.113.9"}},{"id":"s2","upload":0,"download":0,"metadata":{"host":"api.bilibili.com","sniffHost":"i0.hdslb.com"}}],"uploadTotal":0,"downloadTotal":0}"#;
+    let parsed_sniffed = parse_snapshot(sniffed).unwrap();
+    assert_eq!(
+        parsed_sniffed.connections[0].metadata.host.as_deref(),
+        Some("i0.hdslb.com")
+    );
+    assert_eq!(
+        parsed_sniffed.connections[1].metadata.host.as_deref(),
+        Some("api.bilibili.com")
+    );
 }
 
 #[test]
