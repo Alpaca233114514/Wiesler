@@ -450,13 +450,19 @@ mod tests {
         assert_eq!(snap.upload_total, 120);
         assert_eq!(snap.download_total, 340);
         assert_eq!(snap.connections.len(), 1);
-        assert_eq!(snap.connections[0].metadata.process.as_deref(), Some("demo.exe"));
+        assert_eq!(
+            snap.connections[0].metadata.process.as_deref(),
+            Some("demo.exe")
+        );
         assert_eq!(snap.connections[0].metadata.source_port, Some(54321));
 
         let null_conns = br#"{"uploadTotal":0,"downloadTotal":0,"connections":null}"#;
         assert!(parse_snapshot(null_conns).unwrap().connections.is_empty());
 
         let dup_ids = br#"{"uploadTotal":0,"downloadTotal":0,"connections":[{"id":"a","upload":0,"download":0,"metadata":{}},{"id":"a","upload":0,"download":0,"metadata":{}}]}"#;
-        assert_eq!(parse_snapshot(dup_ids).unwrap_err(), ProbeError::InvalidSnapshot);
+        assert_eq!(
+            parse_snapshot(dup_ids).unwrap_err(),
+            ProbeError::InvalidSnapshot
+        );
     }
 }
