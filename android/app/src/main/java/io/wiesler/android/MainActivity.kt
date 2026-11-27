@@ -366,6 +366,10 @@ class MainActivity : ComponentActivity() {
             studio.sourceFilter = filter
             publishUiState()
         },
+        onGraphModeChange = { mode ->
+            studio.graphMode = mode
+            publishUiState()
+        },
         onSelectFlow = { id ->
             studio.selectedId = id
             publishUiState()
@@ -1587,6 +1591,7 @@ class MainActivity : ComponentActivity() {
             studioQuery = studio.query,
             studioProtocol = studio.protocol,
             studioSourceFilter = studio.sourceFilter,
+            studioGraphMode = studio.graphMode,
             studioRateHistory = rateHist,
             mihomoTrend = if (tab == WieslerTab.MONITOR) mihomoTrend.toList() else uiState.mihomoTrend,
             globalEnabled = !paused,

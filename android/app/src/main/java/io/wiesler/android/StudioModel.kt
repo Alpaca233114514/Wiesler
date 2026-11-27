@@ -17,6 +17,11 @@ enum class StudioSourceFilter(val label: String) {
     OTHER("其他")
 }
 
+enum class StudioGraphMode(val label: String) {
+    SITE("按网站"),
+    HOST("按域名")
+}
+
 enum class RouteNodeKind {
     DEVICE,
     ROUTE,
@@ -33,7 +38,9 @@ data class RouteNode(
 data class StudioHostGroup(
     val key: String,
     val label: String,
-    val flows: List<StudioFlow>
+    val flows: List<StudioFlow>,
+    val site: SiteMatch? = null,
+    val distinctHosts: List<String> = emptyList()
 )
 
 data class StudioFlow(
@@ -54,6 +61,11 @@ data class StudioFlow(
     val event: String? = null
 ) {
     val hostKey: String get() = host.lowercase(Locale.ROOT).trimEnd('.')
+    val site: SiteMatch? get() = SiteDictionary.resolveSite(host)
+    val siteName: String? get() = site?.name
+    val siteUrl: String? get() = site?.url
+    val siteGroupKey: String get() = site?.let { "site:${it.id}" } ?: "host:$hostKey"
+    val displayTarget: String get() = site?.name ?: host
     val flowKey: String get() = "$id\u0000$start"
     val destinationPort: String
         get() {
@@ -117,6 +129,7 @@ class StudioSession {
     var query = ""
     var protocol = "全部"
     var sourceFilter = StudioSourceFilter.ALL
+    var graphMode = StudioGraphMode.SITE
     var overseasExits: Set<String> = emptySet()
 
     fun switchSource(value: Boolean) {
@@ -196,9 +209,11 @@ class StudioSession {
             StudioSourceFilter.OVERSEAS -> trafficRoute(flow.exitNode, overseasExits) == TrafficRoute.OVERSEAS
             StudioSourceFilter.OTHER -> trafficRoute(flow.exitNode, overseasExits) == TrafficRoute.OTHER
         }
-        val matchesQuery = query.isBlank() || listOf(
-            flow.app, flow.host, flow.source, flow.destination, flow.route, flow.rule
-        ).any { value -> value.contains(query, ignoreCase = true) }
+        val matchesQuery = query.isBlank() || sequenceOf(
+            flow.app, flow.host, flow.source, flow.destination, flow.route, flow.rule,
+            flow.site?.name, flow.site?.url, flow.site?.category
+        ).filterNotNull().any { value -> value.contains(query, ignoreCase = true) } ||
+            (flow.site?.aliases?.any { alias -> alias.contains(query, ignoreCase = true) } == true)
         matchesProtocol && matchesSource && matchesQuery
     }
 
@@ -212,7 +227,7 @@ class StudioSession {
         graphHostGroups(filtered(), maxGroups)
 
     fun graphHostGroups(matches: List<StudioFlow>, maxGroups: Int = 6): List<StudioHostGroup> {
-        val groups = groupByHost(matches)
+        val groups = if (graphMode == StudioGraphMode.SITE) groupBySite(matches) else groupByHost(matches)
         if (groups.size <= maxGroups) return groups
         val displayed = groups.take(maxGroups).toMutableList()
         val selectedGroup = groups.firstOrNull { group -> group.flows.any { it.id == selectedId } }
@@ -242,7 +257,35 @@ fun groupByHost(flows: List<StudioFlow>): List<StudioHostGroup> {
         labels.putIfAbsent(key, flow.host)
     }
     return groups.map { (key, members) ->
-        StudioHostGroup(key = key, label = labels.getValue(key), flows = members)
+        val label = labels.getValue(key)
+        StudioHostGroup(key = key, label = label, flows = members, site = null, distinctHosts = listOf(label))
+    }
+}
+
+fun groupBySite(flows: List<StudioFlow>): List<StudioHostGroup> {
+    val groups = LinkedHashMap<String, MutableList<StudioFlow>>()
+    val labels = LinkedHashMap<String, String>()
+    val sites = LinkedHashMap<String, SiteMatch?>()
+    val hostSets = LinkedHashMap<String, LinkedHashSet<String>>()
+    val hostLists = LinkedHashMap<String, MutableList<String>>()
+    for (flow in flows) {
+        val key = flow.siteGroupKey
+        val site = flow.site
+        groups.getOrPut(key) { ArrayList() }.add(flow)
+        labels.putIfAbsent(key, site?.name ?: flow.host)
+        sites.putIfAbsent(key, site)
+        val seen = hostSets.getOrPut(key) { LinkedHashSet() }
+        val list = hostLists.getOrPut(key) { ArrayList() }
+        if (seen.add(flow.hostKey)) list.add(flow.host)
+    }
+    return groups.map { (key, members) ->
+        StudioHostGroup(
+            key = key,
+            label = labels.getValue(key),
+            flows = members,
+            site = sites[key],
+            distinctHosts = hostLists.getValue(key)
+        )
     }
 }
 
@@ -261,7 +304,8 @@ fun routePath(flow: StudioFlow): List<RouteNode> {
         }
         FlowRouting.DIRECT -> Unit
     }
-    nodes.add(RouteNode(RouteNodeKind.SERVER, "服务器", "${flow.host} · ${flow.destination}"))
+    val targetLabel = if (flow.siteName != null) "${flow.siteName} (${flow.host})" else flow.host
+    nodes.add(RouteNode(RouteNodeKind.SERVER, "服务器", "$targetLabel · ${flow.destination}"))
     return nodes
 }
 
@@ -285,7 +329,11 @@ fun parseStudioFlow(item: JSONObject): StudioFlow {
     val metadata = item.optJSONObject("metadata") ?: JSONObject()
     fun value(camel: String, snake: String = camel) =
         metadata.optString(camel).ifBlank { metadata.optString(snake) }
-    val host = value("host").ifBlank { value("destinationIP", "destination_ip").ifBlank { "未知目标" } }
+    val host = value("host").ifBlank {
+        value("sniffHost", "sniff_host").ifBlank {
+            value("destinationIP", "destination_ip").ifBlank { "未知目标" }
+        }
+    }
     val chains = item.optJSONArray("chains")
     val chainText = (0 until (chains?.length() ?: 0))
         .map { chains!!.optString(it) }

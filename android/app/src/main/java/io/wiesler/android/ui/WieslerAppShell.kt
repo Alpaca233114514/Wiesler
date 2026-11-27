@@ -118,6 +118,7 @@ import io.wiesler.android.ControllerDiscovery
 import io.wiesler.android.DiscoveredController
 import io.wiesler.android.R
 import io.wiesler.android.StoredSession
+import io.wiesler.android.StudioGraphMode
 import io.wiesler.android.StudioSourceFilter
 import io.wiesler.android.ThemePreference
 import io.wiesler.android.eligibleExit
@@ -138,6 +139,7 @@ data class WieslerActions(
     val onQueryChange: (String) -> Unit,
     val onProtocolChange: (String) -> Unit,
     val onSourceFilterChange: (StudioSourceFilter) -> Unit,
+    val onGraphModeChange: (StudioGraphMode) -> Unit,
     val onSelectFlow: (String?) -> Unit,
     val onRefreshEgress: () -> Unit,
     val onToggleGlobal: (Boolean) -> Unit,
@@ -298,6 +300,7 @@ fun WieslerAppShell(
                                     onQueryChange = actions.onQueryChange,
                                     onProtocolChange = actions.onProtocolChange,
                                     onSourceFilterChange = actions.onSourceFilterChange,
+                                    onGraphModeChange = actions.onGraphModeChange,
                                     onSelectFlow = actions.onSelectFlow,
                                     onOpenControllerDialog = { actions.onSetControllerDialog(true) },
                                     onRefreshEgress = actions.onRefreshEgress
@@ -956,7 +959,7 @@ fun WieslerPreview() {
                 onSelectTab = {}, onRunQualityCheck = {}, onToggleQualityMonitor = {},
                 onSelectQualityPingTarget = {}, onSwitchStudioSource = {}, onToggleFreeze = {},
                 onToggleCapturePause = {}, onReplayIndex = {}, onBackToNow = {},
-                onQueryChange = {}, onProtocolChange = {}, onSourceFilterChange = {},
+                onQueryChange = {}, onProtocolChange = {}, onSourceFilterChange = {}, onGraphModeChange = {},
                 onSelectFlow = {}, onRefreshEgress = {}, onToggleGlobal = {},
                 onToggleForward = {}, onJumpOverseasConnections = {}, onStartLoss = {},
                 onStopLoss = {}, onToggleRfMonitor = {}, onRequestRfPermissions = {},
