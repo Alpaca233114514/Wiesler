@@ -116,6 +116,7 @@ object ConnectionsStreamParser {
         val chainBuilder = StringBuilder()
 
         var host = ""
+        var sniffHost = ""
         var process = ""
         var type = ""
         var sourceIp = ""
@@ -155,6 +156,10 @@ object ConnectionsStreamParser {
                         while (reader.hasNext()) {
                             when (reader.nextName()) {
                                 "host" -> host = readOptionalString(reader)
+                                "sniffHost", "sniff_host" -> {
+                                    val v = readOptionalString(reader)
+                                    if (sniffHost.isBlank() && v.isNotBlank()) sniffHost = v
+                                }
                                 "process" -> process = readOptionalString(reader)
                                 "type" -> type = readOptionalString(reader)
                                 "sourceIP", "source_ip" -> {
@@ -187,7 +192,7 @@ object ConnectionsStreamParser {
         }
         reader.endObject()
 
-        val resolvedHost = host.ifBlank { destIp.ifBlank { "未知目标" } }
+        val resolvedHost = host.ifBlank { sniffHost.ifBlank { destIp.ifBlank { "未知目标" } } }
         val resolvedProcess = process.ifBlank { type.ifBlank { "未知应用" } }
         val resolvedRoute = if (chainBuilder.isEmpty()) "未知" else chainBuilder.toString()
         val resolvedRule = when {

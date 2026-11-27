@@ -270,6 +270,8 @@ struct WireMetadata {
     #[serde(rename = "destinationPort")]
     destination_port: Option<Port>,
     host: Option<String>,
+    #[serde(rename = "sniffHost")]
+    sniff_host: Option<String>,
     process: Option<String>,
     pid: Option<u32>,
 }
@@ -305,7 +307,9 @@ pub fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot, ProbeError> {
                 destination_ip: nonempty(m.destination_ip),
                 source_port: m.source_port.map(Port::parse).transpose()?,
                 destination_port: m.destination_port.map(Port::parse).transpose()?,
-                host: nonempty(m.host),
+                // TUN 透明代理关闭 override-destination 时 host 可能为空，回退到 SNI 嗅探域名。
+                // Fall back to sniffHost when TUN mode leaves host blank with override-destination off.
+                host: nonempty(m.host).or_else(|| nonempty(m.sniff_host)),
                 process: nonempty(m.process)
                     .and_then(|p| p.rsplit(['/', '\\']).next().map(str::to_owned))
                     .filter(|p| !p.is_empty()),

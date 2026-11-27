@@ -17,6 +17,11 @@ enum class StudioSourceFilter(val label: String) {
     OTHER("其他")
 }
 
+enum class StudioGraphMode(val label: String) {
+    SITE("按网站"),
+    HOST("按域名")
+}
+
 enum class RouteNodeKind {
     DEVICE,
     ROUTE,
@@ -33,7 +38,9 @@ data class RouteNode(
 data class StudioHostGroup(
     val key: String,
     val label: String,
-    val flows: List<StudioFlow>
+    val flows: List<StudioFlow>,
+    val site: SiteMatch? = null,
+    val distinctHosts: List<String> = emptyList()
 )
 
 data class StudioFlow(
@@ -53,9 +60,14 @@ data class StudioFlow(
     val tx: Double? = null,
     val event: String? = null
 ) {
-    // 缓存高频衍生字段，避免每秒筛选/计数阶段重复 split 与字符串分配。
-    // Cache hot derived properties to avoid repeated split/list allocations per tick.
+    // 缓存高频衍生字段，避免每秒筛选/计数阶段重复 split、查表与字符串分配。
+    // Cache hot derived properties to avoid repeated split/dictionary allocations per tick.
     val hostKey: String = host.lowercase(Locale.ROOT).trimEnd('.')
+    val site: SiteMatch? = SiteDictionary.resolveSite(host)
+    val siteName: String? = site?.name
+    val siteUrl: String? = site?.url
+    val siteGroupKey: String = site?.let { "site:${it.id}" } ?: "host:$hostKey"
+    val displayTarget: String = site?.name ?: host
     val flowKey: String = "$id\u0000$start"
     val destinationPort: String = run {
         val idx = destination.lastIndexOf(':')
@@ -141,6 +153,7 @@ class StudioSession {
     var query = ""
     var protocol = "全部"
     var sourceFilter = StudioSourceFilter.ALL
+    var graphMode = StudioGraphMode.SITE
     var overseasExits: Set<String> = emptySet()
 
     fun switchSource(value: Boolean) {
@@ -220,9 +233,11 @@ class StudioSession {
             StudioSourceFilter.OVERSEAS -> trafficRoute(flow.exitNode, overseasExits) == TrafficRoute.OVERSEAS
             StudioSourceFilter.OTHER -> trafficRoute(flow.exitNode, overseasExits) == TrafficRoute.OTHER
         }
-        val matchesQuery = query.isBlank() || listOf(
-            flow.app, flow.host, flow.source, flow.destination, flow.route, flow.rule
-        ).any { value -> value.contains(query, ignoreCase = true) }
+        val matchesQuery = query.isBlank() || sequenceOf(
+            flow.app, flow.host, flow.source, flow.destination, flow.route, flow.rule,
+            flow.site?.name, flow.site?.url, flow.site?.category
+        ).filterNotNull().any { value -> value.contains(query, ignoreCase = true) } ||
+            (flow.site?.aliases?.any { alias -> alias.contains(query, ignoreCase = true) } == true)
         matchesProtocol && matchesSource && matchesQuery
     }
 
@@ -236,7 +251,7 @@ class StudioSession {
         graphHostGroups(filtered(), maxGroups)
 
     fun graphHostGroups(matches: List<StudioFlow>, maxGroups: Int = 6): List<StudioHostGroup> {
-        val groups = groupByHost(matches)
+        val groups = if (graphMode == StudioGraphMode.SITE) groupBySite(matches) else groupByHost(matches)
         if (groups.size <= maxGroups) return groups
         val displayed = groups.take(maxGroups).toMutableList()
         val selectedGroup = groups.firstOrNull { group -> group.flows.any { it.id == selectedId } }
@@ -266,8 +281,52 @@ fun groupByHost(flows: List<StudioFlow>): List<StudioHostGroup> {
         labels.putIfAbsent(key, flow.host)
     }
     return groups.map { (key, members) ->
-        StudioHostGroup(key = key, label = labels.getValue(key), flows = members)
+        val label = labels.getValue(key)
+        StudioHostGroup(key = key, label = label, flows = members, site = null, distinctHosts = listOf(label))
     }
+}
+
+private val rawIpHostRegex = Regex("""^(\d{1,3}(\.\d{1,3}){3}|\[?[0-9a-fA-F:]+\]?)$""")
+
+fun groupBySite(flows: List<StudioFlow>): List<StudioHostGroup> {
+    val groups = LinkedHashMap<String, MutableList<StudioFlow>>()
+    val labels = LinkedHashMap<String, String>()
+    val sites = LinkedHashMap<String, SiteMatch?>()
+    val hostSets = LinkedHashMap<String, LinkedHashSet<String>>()
+    val hostLists = LinkedHashMap<String, MutableList<String>>()
+    for (flow in flows) {
+        val key = flow.siteGroupKey
+        val site = flow.site
+        groups.getOrPut(key) { ArrayList() }.add(flow)
+        labels.putIfAbsent(key, site?.name ?: flow.host)
+        sites.putIfAbsent(key, site)
+        val seen = hostSets.getOrPut(key) { LinkedHashSet() }
+        val list = hostLists.getOrPut(key) { ArrayList() }
+        if (seen.add(flow.hostKey)) list.add(flow.host)
+    }
+    val built = groups.map { (key, members) ->
+        StudioHostGroup(
+            key = key,
+            label = labels.getValue(key),
+            flows = members,
+            site = sites[key],
+            distinctHosts = hostLists.getValue(key)
+        )
+    }
+    // 按网站视图优先展示已识别网站与域名节点，避免单连接裸 IP 挤占前 6 个图谱槽位。
+    // Prioritize mapped sites and domain hosts over raw IP literals so the 6 graph slots stay informative.
+    return built.withIndex()
+        .sortedWith(
+            compareByDescending<IndexedValue<StudioHostGroup>> { (_, g) ->
+                when {
+                    g.site != null -> 2
+                    rawIpHostRegex.matches(g.label.trim()) -> 0
+                    else -> 1
+                }
+            }.thenByDescending { (_, g) -> g.flows.size }
+                .thenBy { it.index }
+        )
+        .map { it.value }
 }
 
 fun routePath(flow: StudioFlow): List<RouteNode> {
@@ -285,7 +344,8 @@ fun routePath(flow: StudioFlow): List<RouteNode> {
         }
         FlowRouting.DIRECT -> Unit
     }
-    nodes.add(RouteNode(RouteNodeKind.SERVER, "服务器", "${flow.host} · ${flow.destination}"))
+    val targetLabel = if (flow.siteName != null) "${flow.siteName} (${flow.host})" else flow.host
+    nodes.add(RouteNode(RouteNodeKind.SERVER, "服务器", "$targetLabel · ${flow.destination}"))
     return nodes
 }
 
@@ -309,7 +369,11 @@ fun parseStudioFlow(item: JSONObject): StudioFlow {
     val metadata = item.optJSONObject("metadata") ?: JSONObject()
     fun value(camel: String, snake: String = camel) =
         metadata.optString(camel).ifBlank { metadata.optString(snake) }
-    val host = value("host").ifBlank { value("destinationIP", "destination_ip").ifBlank { "未知目标" } }
+    val host = value("host").ifBlank {
+        value("sniffHost", "sniff_host").ifBlank {
+            value("destinationIP", "destination_ip").ifBlank { "未知目标" }
+        }
+    }
     val chains = item.optJSONArray("chains")
     val chainText = (0 until (chains?.length() ?: 0))
         .map { chains!!.optString(it) }

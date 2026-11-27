@@ -88,6 +88,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.wiesler.android.FlowRouting
 import io.wiesler.android.StudioFlow
+import io.wiesler.android.StudioGraphMode
 import io.wiesler.android.StudioHostGroup
 import io.wiesler.android.StudioSourceFilter
 import io.wiesler.android.formatBytes
@@ -140,6 +141,7 @@ fun GraphWorkbenchScreen(
     onQueryChange: (String) -> Unit,
     onProtocolChange: (String) -> Unit,
     onSourceFilterChange: (StudioSourceFilter) -> Unit,
+    onGraphModeChange: (StudioGraphMode) -> Unit,
     onSelectFlow: (String?) -> Unit,
     onOpenControllerDialog: () -> Unit,
     onRefreshEgress: () -> Unit
@@ -256,6 +258,12 @@ fun GraphWorkbenchScreen(
                     }
                 }
 
+                ExpressiveConnectedChoiceRow(
+                    options = StudioGraphMode.entries.map { it to it.label },
+                    selected = state.studioGraphMode,
+                    onSelect = onGraphModeChange
+                )
+
                 InteractiveHostGraphCanvas(
                     groups = state.studioHostGroups,
                     selectedId = state.studioSelectedId,
@@ -370,7 +378,7 @@ fun GraphWorkbenchScreen(
                 OutlinedTextField(
                     value = state.studioQuery,
                     onValueChange = onQueryChange,
-                    placeholder = { Text("搜索应用、域名、IP 或规则") },
+                    placeholder = { Text("搜索应用、网站、域名、IP 或规则") },
                     leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
                     trailingIcon = {
                         if (state.studioQuery.isNotEmpty()) {
@@ -440,7 +448,13 @@ fun GraphWorkbenchScreen(
 
     val inspected = selectedFlow.takeIf { inspectFlowId != null }
     if (inspected != null) {
-        val peers = state.studioFilteredFlows.filter { it.hostKey == inspected.hostKey }
+        val peers = state.studioFilteredFlows.filter { peer ->
+            if (state.studioGraphMode == StudioGraphMode.SITE) {
+                peer.siteGroupKey == inspected.siteGroupKey
+            } else {
+                peer.hostKey == inspected.hostKey
+            }
+        }
         SessionInspectorSheet(
             flow = inspected,
             peers = peers,
@@ -459,7 +473,7 @@ fun GraphWorkbenchScreen(
             title = { Text("拓扑说明") },
             text = {
                 Text(
-                    "同域名不同端口自动堆叠为单一目标节点，点击可在检查器内切换连接。\n\n" +
+                    "「按网站」模式通过内置离线字典将 CDN 与子域名归并为网站/服务节点，「按域名」可随时切回原始域名视图；检查器始终保留原始域名与目标地址。\n\n" +
                         "实时模式仅向控制器发送只读 GET；冻结定格画布的同时后台保留最近 60 帧。"
                 )
             },
@@ -645,15 +659,25 @@ private fun InteractiveHostGraphCanvas(
                         )
                     )
                 }
+                fun groupNodeKey(group: StudioHostGroup): String =
+                    if (group.key.startsWith("site:") || group.key.startsWith("host:")) group.key else "host:${group.key}"
+
                 groups.forEachIndexed { idx, group ->
                     val leader = group.flows.firstOrNull { it.id == selectedId } ?: group.flows.first()
                     val ports = group.flows.map { it.destinationPort }.distinct().size
-                    val subtitle = if (group.flows.size > 1) {
+                    val hosts = group.distinctHosts.ifEmpty { listOf(leader.host) }
+                    val subtitle = if (group.site != null) {
+                        when {
+                            hosts.size > 1 -> "${hosts.size} 域名 · ${group.flows.size} 连接 · ${group.site.url}"
+                            group.flows.size > 1 -> "${group.flows.size} 连接 · ${hosts.first()}"
+                            else -> "${hosts.first()} · :${leader.destinationPort}"
+                        }
+                    } else if (group.flows.size > 1) {
                         "${group.flows.size} 条 · $ports 端口"
                     } else {
                         "${leader.protocol} :${leader.destinationPort}"
                     }
-                    val key = "host:${group.key}"
+                    val key = groupNodeKey(group)
                     val pos = customPositions[key] ?: Offset(w - hostW - padX, slotY(idx, groups.size))
                     builtNodes.add(
                         GraphNodeBox(
@@ -677,7 +701,7 @@ private fun InteractiveHostGraphCanvas(
                 canvas.scale(zoom, zoom)
 
                 for (group in groups) {
-                    val targetNode = builtNodes.firstOrNull { it.key == "host:${group.key}" } ?: continue
+                    val targetNode = builtNodes.firstOrNull { it.key == groupNodeKey(group) } ?: continue
                     for ((bucketKey, _, _) in appBuckets) {
                         val members = group.flows.filter { appKey(it.app) == bucketKey }
                         if (members.isEmpty()) continue
@@ -886,13 +910,17 @@ private fun SessionFlowCard(
             ) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
-                        text = flow.host,
+                        text = flow.displayTarget,
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "${flow.app} · ${flow.protocol} :${flow.destinationPort}",
+                        text = if (flow.site != null) {
+                            "${flow.host} · ${flow.app} · ${flow.protocol} :${flow.destinationPort}"
+                        } else {
+                            "${flow.app} · ${flow.protocol} :${flow.destinationPort}"
+                        },
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -960,13 +988,14 @@ private fun SessionInspectorSheet(
                 .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            val site = flow.site
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = flow.host,
+                    text = flow.displayTarget,
                     style = MaterialTheme.typography.headlineSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -979,23 +1008,40 @@ private fun SessionInspectorSheet(
 
             SelectionContainer {
                 Text(
-                    text = "${flow.protocol} · ${flow.destination}",
+                    text = if (site != null) {
+                        "${site.url} · ${flow.host} · ${flow.protocol} · ${flow.destination}"
+                    } else {
+                        "${flow.protocol} · ${flow.destination}"
+                    },
                     style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             if (peers.size > 1) {
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    peers.forEach { peer ->
-                        FilterChip(
-                            selected = peer.id == flow.id,
-                            onClick = { onSwitchPeer(peer.id) },
-                            label = { Text("${peer.app} :${peer.destinationPort}") }
-                        )
+                val multiHost = peers.map { it.hostKey }.distinct().size > 1
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = if (multiHost) "同网站连接（${peers.size} 条）" else "同域名连接（${peers.size} 条）",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        peers.forEach { peer ->
+                            FilterChip(
+                                selected = peer.id == flow.id,
+                                onClick = { onSwitchPeer(peer.id) },
+                                label = {
+                                    Text(
+                                        if (multiHost) "${peer.host} · :${peer.destinationPort}"
+                                        else "${peer.app} · :${peer.destinationPort}"
+                                    )
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -1014,6 +1060,10 @@ private fun SessionInspectorSheet(
                             modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
+                            if (site != null) {
+                                InspectorRow("所属网站", "${site.name}（${site.url} · ${site.category}）")
+                                InspectorRow("原始域名", flow.host)
+                            }
                             InspectorRow("应用", flow.app)
                             InspectorRow("路由", flow.routing.label)
                             InspectorRow("代理链", flow.route)

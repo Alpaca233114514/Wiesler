@@ -17,6 +17,7 @@ import io.wiesler.android.RfDiagnosticsSnapshot
 import io.wiesler.android.StoredSession
 import io.wiesler.android.StudioFlow
 import io.wiesler.android.StudioFrame
+import io.wiesler.android.StudioGraphMode
 import io.wiesler.android.StudioHostGroup
 import io.wiesler.android.StudioSourceFilter
 import io.wiesler.android.SystemLinkSnapshot
@@ -106,6 +107,7 @@ data class WieslerUiState(
     val studioQuery: String = "",
     val studioProtocol: String = "全部",
     val studioSourceFilter: StudioSourceFilter = StudioSourceFilter.ALL,
+    val studioGraphMode: StudioGraphMode = StudioGraphMode.SITE,
     val studioRateHistory: Map<String, List<Rate?>> = emptyMap(),
     val mihomoTrend: List<Rate?> = emptyList(),
     // Egress
