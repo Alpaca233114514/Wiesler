@@ -50,6 +50,7 @@ import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.MonitorHeart
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -112,6 +113,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.wiesler.android.ControllerDiscovery
 import io.wiesler.android.DiscoveredController
 import io.wiesler.android.R
@@ -125,6 +127,9 @@ import kotlin.math.roundToInt
 
 data class WieslerActions(
     val onSelectTab: (WieslerTab) -> Unit,
+    val onRunQualityCheck: () -> Unit,
+    val onToggleQualityMonitor: (Boolean) -> Unit,
+    val onSelectQualityPingTarget: (String) -> Unit,
     val onSwitchStudioSource: (Boolean) -> Unit,
     val onToggleFreeze: () -> Unit,
     val onToggleCapturePause: () -> Unit,
@@ -183,10 +188,11 @@ fun WieslerAppShell(
     val backdropLayer = rememberGraphicsLayer()
     var backdropTopLeft by remember { mutableStateOf(Offset.Zero) }
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val bottomClearance = 92.dp + navBarBottom
+    val bottomClearance = 90.dp + navBarBottom
 
     val navItems = remember {
         listOf(
+            Triple(WieslerTab.HOME, "首页", Icons.Rounded.Speed),
             Triple(WieslerTab.GRAPH, "图谱", Icons.Rounded.Hub),
             Triple(WieslerTab.MONITOR, "监测", Icons.Rounded.MonitorHeart),
             Triple(WieslerTab.PRIVACY, "隐私", Icons.Rounded.Shield),
@@ -274,6 +280,14 @@ fun WieslerAppShell(
                     ) {
                         Crossfade(targetState = state.activeTab, label = "MainTabCrossfade") { tab ->
                             when (tab) {
+                                WieslerTab.HOME -> HomeQualityScreen(
+                                    state = state,
+                                    onRunQualityCheck = actions.onRunQualityCheck,
+                                    onToggleContinuousMonitor = actions.onToggleQualityMonitor,
+                                    onSelectPingTarget = actions.onSelectQualityPingTarget,
+                                    onOpenControllerDialog = { actions.onSetControllerDialog(true) },
+                                    onNavigateTab = actions.onSelectTab
+                                )
                                 WieslerTab.GRAPH -> GraphWorkbenchScreen(
                                     state = state,
                                     onSwitchSource = actions.onSwitchStudioSource,
@@ -354,7 +368,7 @@ fun WieslerAppShell(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 14.dp)
+                .padding(horizontal = 18.dp, vertical = 14.dp)
         )
 
         TopAlertBannerHost(
@@ -457,9 +471,9 @@ private fun FloatingGlassNavBar(
     val slotCount = items.size.coerceAtLeast(1)
     val horizontalPadDp = 8.dp
     val horizontalPadPx = with(density) { horizontalPadDp.toPx() }
-    val pillWidthDp = 58.dp
-    val pillHeightDp = 46.dp
-    val pillWidthPx = with(density) { pillWidthDp.toPx() }
+    val pillHeightDp = 44.dp
+    val minPillWidthPx = with(density) { 42.dp.toPx() }
+    val maxPillWidthPx = with(density) { 52.dp.toPx() }
 
     var dockWidthPx by remember { mutableIntStateOf(0) }
     var isScrubbing by remember { mutableStateOf(false) }
@@ -468,20 +482,20 @@ private fun FloatingGlassNavBar(
     val settledIndex by animateFloatAsState(
         targetValue = activeTab.index.toFloat(),
         animationSpec = spring(
-            dampingRatio = 0.74f,
+            dampingRatio = 0.76f,
             stiffness = Spring.StiffnessMediumLow
         ),
         label = "DockPillPosition"
     )
     val displayIndex = if (isScrubbing) scrubIndex else settledIndex
     val pillScaleX by animateFloatAsState(
-        targetValue = if (isScrubbing) 1.12f else 1.0f,
-        animationSpec = spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMedium),
+        targetValue = if (isScrubbing) 1.10f else 1.0f,
+        animationSpec = spring(dampingRatio = 0.68f, stiffness = Spring.StiffnessMedium),
         label = "DockPillScaleX"
     )
     val pillScaleY by animateFloatAsState(
-        targetValue = if (isScrubbing) 1.07f else 1.0f,
-        animationSpec = spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMedium),
+        targetValue = if (isScrubbing) 1.06f else 1.0f,
+        animationSpec = spring(dampingRatio = 0.68f, stiffness = Spring.StiffnessMedium),
         label = "DockPillScaleY"
     )
 
@@ -493,16 +507,16 @@ private fun FloatingGlassNavBar(
     val pillBorder = if (isScrubbing) {
         MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.55f else 0.45f)
     } else {
-        MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.24f else 0.18f)
+        MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.26f else 0.20f)
     }
 
     Box(
         modifier = modifier
-            .widthIn(max = 328.dp)
+            .widthIn(max = 368.dp)
             .fillMaxWidth()
             .shadow(elevation = 16.dp, shape = pillShape, ambientColor = shadowColor, spotColor = shadowColor)
             .clip(pillShape)
-            .height(62.dp)
+            .height(60.dp)
             .onGloballyPositioned { dockTopLeft = it.positionInRoot() }
             .onSizeChanged { dockWidthPx = it.width }
             // 统一处理点击与底栏内横向滑动聚焦：手指在图标间拖动时胶囊实时跟手并切换页面。
@@ -584,11 +598,25 @@ private fun FloatingGlassNavBar(
                 .border(1.dp, rimColor, pillShape)
         )
 
-        // 单一共享滑动聚焦胶囊，随点击弹性滑行或随手指横向拖动实时跟手。
-        // Single shared sliding focus pill gliding smoothly across icon slots.
+        // 6 项无字底栏中心极淡发丝分组线（监测 3 项 | 工具 3 项），保持 6 图标等距同时建立视觉秩序。
+        // Subtle 1dp center hairline grouping the 6 icon-only slots into 3+3 without shifting slot math.
+        if (slotCount == 6) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .width(1.dp)
+                    .height(18.dp)
+                    .background(rimColor)
+            )
+        }
+
+        // 单一共享滑动聚焦胶囊，随槽宽等比自适应居中，点击弹性滑行或横向拖动实时跟手。
+        // Single shared sliding focus pill sized proportionally to slot width for balanced 6-icon alignment.
         if (dockWidthPx > 0) {
             val innerWidthPx = (dockWidthPx - horizontalPadPx * 2f).coerceAtLeast(1f)
             val slotWidthPx = innerWidthPx / slotCount
+            val pillWidthPx = (slotWidthPx * 0.84f).coerceIn(minPillWidthPx, maxPillWidthPx)
+            val pillWidthDp = with(density) { pillWidthPx.toDp() }
             val pillOffsetX = (horizontalPadPx + (displayIndex + 0.5f) * slotWidthPx - pillWidthPx / 2f).roundToInt()
             Box(
                 modifier = Modifier
@@ -635,7 +663,7 @@ private fun FloatingGlassNavBar(
                         contentDescription = null,
                         tint = iconTint,
                         modifier = Modifier
-                            .size(24.dp)
+                            .size(22.dp)
                             .graphicsLayer {
                                 scaleX = iconScale
                                 scaleY = iconScale
@@ -925,7 +953,8 @@ fun WieslerPreview() {
         WieslerAppShell(
             state = WieslerUiState(),
             actions = WieslerActions(
-                onSelectTab = {}, onSwitchStudioSource = {}, onToggleFreeze = {},
+                onSelectTab = {}, onRunQualityCheck = {}, onToggleQualityMonitor = {},
+                onSelectQualityPingTarget = {}, onSwitchStudioSource = {}, onToggleFreeze = {},
                 onToggleCapturePause = {}, onReplayIndex = {}, onBackToNow = {},
                 onQueryChange = {}, onProtocolChange = {}, onSourceFilterChange = {},
                 onSelectFlow = {}, onRefreshEgress = {}, onToggleGlobal = {},

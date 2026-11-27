@@ -1,11 +1,14 @@
 package io.wiesler.android.ui
 
+import io.wiesler.android.ActiveDnsInspection
 import io.wiesler.android.ActivePrivacyRun
 import io.wiesler.android.AppUiPreferences
 import io.wiesler.android.DeviceEnvironmentInfo
 import io.wiesler.android.DiscoveredController
 import io.wiesler.android.EgressAddress
+import io.wiesler.android.HttpsProbeSnapshot
 import io.wiesler.android.ImportedDatabaseInfo
+import io.wiesler.android.NetworkQualitySnapshot
 import io.wiesler.android.PrivacyReport
 import io.wiesler.android.PrivacySummary
 import io.wiesler.android.Rate
@@ -16,13 +19,15 @@ import io.wiesler.android.StudioFlow
 import io.wiesler.android.StudioFrame
 import io.wiesler.android.StudioHostGroup
 import io.wiesler.android.StudioSourceFilter
+import io.wiesler.android.SystemLinkSnapshot
 
 enum class WieslerTab(val index: Int, val label: String) {
-    GRAPH(0, "图谱"),
-    MONITOR(1, "监测"),
-    PRIVACY(2, "隐私"),
-    HISTORY(3, "历史"),
-    SETTINGS(4, "设置")
+    HOME(0, "首页"),
+    GRAPH(1, "图谱"),
+    MONITOR(2, "监测"),
+    PRIVACY(3, "隐私"),
+    HISTORY(4, "历史"),
+    SETTINGS(5, "设置")
 }
 
 data class AppUsageEntry(
@@ -69,9 +74,15 @@ data class TopBannerMessage(
 )
 
 data class WieslerUiState(
-    val activeTab: WieslerTab = WieslerTab.GRAPH,
+    val activeTab: WieslerTab = WieslerTab.HOME,
     val preferences: AppUiPreferences = AppUiPreferences(),
     val topBanner: TopBannerMessage? = null,
+    // Network Quality Home Monitor
+    val systemLink: SystemLinkSnapshot = SystemLinkSnapshot(),
+    val lastDnsInspection: ActiveDnsInspection? = null,
+    val lastHttpsProbe: HttpsProbeSnapshot? = null,
+    val qualitySnapshot: NetworkQualitySnapshot = NetworkQualitySnapshot(),
+    val qualityCheckBusy: Boolean = false,
     // Controller & Capture
     val controllerAddress: String = "http://127.0.0.1:9090",
     val controllerEnabled: Boolean = false,
