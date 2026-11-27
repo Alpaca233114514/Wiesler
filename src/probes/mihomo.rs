@@ -7,7 +7,7 @@ use serde::{
     Deserialize, Deserializer,
     de::{self, MapAccess, SeqAccess, Visitor},
 };
-use std::{collections::BTreeSet, fmt, sync::OnceLock};
+use std::{borrow::Cow, collections::BTreeSet, fmt, sync::OnceLock};
 
 const MAX_BODY: usize = 16 * 1024 * 1024;
 
@@ -313,8 +313,8 @@ impl<'de> Deserialize<'de> for StreamingSnapshot {
                 let mut download_total = None;
                 let mut connections = None;
 
-                while let Some(key) = map.next_key::<&str>()? {
-                    match key {
+                while let Some(key) = map.next_key::<Cow<'de, str>>()? {
+                    match key.as_ref() {
                         "uploadTotal" => {
                             if upload_total.is_some() {
                                 return Err(de::Error::duplicate_field("uploadTotal"));
@@ -464,5 +464,11 @@ mod tests {
             parse_snapshot(dup_ids).unwrap_err(),
             ProbeError::InvalidSnapshot
         );
+
+        let escaped_key =
+            br#"{"\u0075ploadTotal":7,"downloadTotal":9,"extra\"key":1,"connections":[]}"#;
+        let escaped = parse_snapshot(escaped_key).expect("escaped json keys should parse");
+        assert_eq!(escaped.upload_total, 7);
+        assert_eq!(escaped.download_total, 9);
     }
 }
