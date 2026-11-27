@@ -29,14 +29,21 @@ function setup(invoke, discovery = async()=>({controllers:[],scanned:0}), system
   }
   const elements=new Map(),get=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
   const timers=new Map();let timerId=0;
-  const window={StudioModel:M,PrivacyModel:require('../ui/privacy-model.js'),innerWidth:1360,addEventListener(){},matchMedia:()=>({matches:false}),__TAURI__:invoke?{core:{invoke:(command,args)=>command==='discover_controllers'?discovery():command==='system_snapshot'?system():command==='egress_address'?egress(args):command==='discover_databases'?databases(args):invoke(command,args)}}:null};
+  const storage = new Map();
+  const localStorage = {
+    getItem: k => (storage.has(k) ? storage.get(k) : null),
+    setItem: (k, v) => { storage.set(k, String(v)); },
+    removeItem: k => { storage.delete(k); }
+  };
+  const colorSchemeMeta = { content: 'light dark' };
+  const window={StudioModel:M,PrivacyModel:require('../ui/privacy-model.js'),QualityModel:require('../ui/quality-model.js'),localStorage,navigator:{onLine:true},innerWidth:1360,addEventListener(){},matchMedia:()=>({matches:false}),__TAURI__:invoke?{core:{invoke:(command,args)=>command==='discover_controllers'?discovery():command==='system_snapshot'?system():command==='egress_address'?egress(args):command==='discover_databases'?databases(args):invoke(command,args)}}:null};
   const listeners={};
-  const context=vm.createContext({window,document:{hidden:false,getElementById:get,createElement:()=>new Element(),createElementNS:()=>new Element(),querySelectorAll:()=>[],addEventListener:(event,fn)=>{(listeners[event] ||= []).push(fn);}},setTimeout:(fn,delay)=>{timers.set(++timerId,{fn,delay});return timerId;},clearTimeout:id=>timers.delete(id)});
+  const context=vm.createContext({window,document:{hidden:false,getElementById:get,createElement:()=>new Element(),createElementNS:()=>new Element(),querySelector:sel=>sel==='meta[name="color-scheme"]'?colorSchemeMeta:null,querySelectorAll:()=>[],addEventListener:(event,fn)=>{(listeners[event] ||= []).push(fn);}},setTimeout:(fn,delay)=>{timers.set(++timerId,{fn,delay});return timerId;},clearTimeout:id=>timers.delete(id)});
   vm.runInContext(fs.readFileSync('desktop/ui/monitor-tools.js','utf8'),context);
   vm.runInContext(fs.readFileSync('desktop/ui/studio.js','utf8'),context);
   get('controller').value='http://127.0.0.1:9090';
   const content=el=>[el.textContent,...el.children.map(content)].join(' ');
-  return {get,content,hide:hidden=>{context.document.hidden=hidden;for(const fn of listeners.visibilitychange||[])fn();},tick:async()=>{const [id,item]=[...timers.entries()].find(([,t])=>t.delay===1000)||[...timers.entries()].find(([,t])=>t.delay===250)||[];if(item){const due=[...timers.entries()].filter(([,t])=>t.delay===item.delay);await Promise.all(due.map(([key,t])=>{timers.delete(key);return t.fn();}));}}};
+  return {get,content,storage,colorSchemeMeta,timers,hide:hidden=>{context.document.hidden=hidden;for(const fn of listeners.visibilitychange||[])fn();},tick:async()=>{const [id,item]=[...timers.entries()].find(([,t])=>t.delay===1000)||[...timers.entries()].find(([,t])=>t.delay===250)||[];if(item){const due=[...timers.entries()].filter(([,t])=>t.delay===item.delay);await Promise.all(due.map(([key,t])=>{timers.delete(key);return t.fn();}));}}};
 }
 test('freeze keeps inspector evidence fixed while collection advances, then resumes',async()=>{
   const ui=await setupWithSamples();ui.get('freeze').onclick();const before=ui.content(ui.get('inspect-content'));
@@ -563,6 +570,46 @@ test('inspector height stays locked to graph panel and preserves scroll across l
   assert.equal(ui.get('inspect-content').scrollTop,140);
   ui.get('flow-rows').children[1].children[0].children[0].onclick();
   assert.equal(ui.get('inspect-content').scrollTop,0);
+});
+
+test('home dashboard runs progressive quality check, updates power profiles, and switches theme/settings tabs',async()=>{
+  const calls=[];
+  const ui=setup(async(command,args)=>{
+    calls.push(command);
+    if(command==='probe_https_204')return {observed_at:1000,status_code:204,latency_ms:45,ok:true,error:null};
+    if(command==='inspect_dns')return {observedAt:1000,resolvers:[{server:'198.18.0.2'}],queries:[{server:'198.18.0.2',domain:'example.com',addresses:['93.184.216.34'],elapsedMs:15,error:null}]};
+    if(command==='rf_probe')return {observed_at_ms:1000,wifi:{available:true,ssid:'Lab5G',rssi_dbm:-52,channel:36,rx_mbps:400,bottleneck:false,summary:'Wi-Fi 良好'},adb_connected:false,score:0,severity:'clear',severity_label:'正常',slots:[],recent_events:[],attribution:{cause:'HEALTHY',confidence:'high',title:'链路正常',detail:'无异常',suggestion:''}};
+    if(command==='ping')return {outcome:'reply',rtt_ms:18,message:'ok'};
+    return {...snapshot(0),observed_at:1000,http_status:200};
+  });
+  await ui.get('home-check-btn').onclick();
+  assert.ok(calls.includes('probe_https_204'));
+  assert.ok(calls.includes('inspect_dns'));
+  assert.ok(calls.includes('rf_probe'));
+  assert.equal(calls.filter(c=>c==='ping').length,3);
+  assert.ok(Number(ui.get('home-score').textContent)>=90);
+  assert.match(ui.get('home-grade').textContent,/S/);
+  assert.equal(ui.get('home-dimensions').children.length,4);
+  assert.equal(ui.get('home-scenarios').children.length,4);
+  const css=fs.readFileSync('desktop/ui/studio.css','utf8');
+  assert.match(css,/\.home-dim-cell\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);[^}]*justify-content:\s*stretch;/s);
+
+  ui.get('view-settings').onclick();
+  ui.get('settings-tab-monitoring').onclick();
+  assert.equal(ui.get('settings-panel-monitoring').hidden,false);
+  assert.equal(ui.get('settings-panel-controller').hidden,true);
+  ui.get('perf-mode-eco').onclick();
+  assert.equal(ui.storage.get('wiesler.performanceMode'),'eco');
+  assert.equal(ui.get('flow-animation').checked,false);
+  assert.equal(ui.get('settings-summary-perf').textContent,'极致省电');
+
+  ui.get('settings-tab-appearance').onclick();
+  ui.get('theme-mode-dark').onclick();
+  assert.equal(ui.storage.get('wiesler.theme'),'dark');
+  assert.equal(ui.colorSchemeMeta.content,'dark');
+  ui.get('theme-mode-system').onclick();
+  assert.equal(ui.storage.has('wiesler.theme'),false);
+  assert.equal(ui.colorSchemeMeta.content,'light dark');
 });
 
 async function setupWithSamples(){
