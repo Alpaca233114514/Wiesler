@@ -3,10 +3,25 @@ use crate::{
     core::event::{Connection, Metadata, Snapshot},
 };
 use reqwest::{Client, StatusCode, header::AUTHORIZATION};
-use serde::Deserialize;
-use std::collections::BTreeSet;
+use serde::{
+    Deserialize, Deserializer,
+    de::{self, MapAccess, SeqAccess, Visitor},
+};
+use std::{collections::BTreeSet, fmt, sync::OnceLock};
 
 const MAX_BODY: usize = 16 * 1024 * 1024;
+
+fn shared_http_client() -> Result<Client, reqwest::Error> {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let built = Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    Ok(CLIENT.get_or_init(|| built).clone())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeError {
@@ -54,11 +69,7 @@ pub struct Mihomo {
 
 impl Mihomo {
     pub fn new(config: ControllerConfig) -> anyhow::Result<Self> {
-        let client = Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(config.timeout)
-            .build()?;
+        let client = shared_http_client()?;
         Ok(Self { config, client })
     }
 
@@ -81,6 +92,7 @@ impl Mihomo {
         &self,
         mut request: reqwest::RequestBuilder,
     ) -> Result<(u16, Vec<u8>), ProbeFailure> {
+        request = request.timeout(self.config.timeout);
         if let Some(header) = &self.config.authorization {
             request = request.header(AUTHORIZATION, header.clone());
         }
@@ -210,18 +222,136 @@ pub struct ProxyInfo {
     pub all: Vec<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WireSnapshot {
-    upload_total: u64,
-    download_total: u64,
-    #[serde(deserialize_with = "connections")]
-    connections: Vec<WireConnection>,
+/// 单遍流式解析 Mihomo `/connections` 快照，边解码边校验连接与去重，跳过未知字段并避免双份中间集合分配。
+/// Single-pass streaming `/connections` parser validating each entry inline while skipping unknown fields.
+struct ValidatedConnections(Vec<Connection>);
+
+impl<'de> Deserialize<'de> for ValidatedConnections {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ConnectionsSeqVisitor;
+
+        impl<'de> Visitor<'de> for ConnectionsSeqVisitor {
+            type Value = ValidatedConnections;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a sequence of Mihomo connections or null")
+            }
+
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+                // Go 的 nil slice 是 null；字段缺失仍由外层拒绝。 / A Go nil slice is null; absent field is still invalid.
+                Ok(ValidatedConnections(Vec::new()))
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut ids = BTreeSet::new();
+                let mut connections = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(1024));
+                while let Some(c) = seq.next_element::<WireConnection>()? {
+                    if c.id.trim().is_empty() || !ids.insert(c.id.clone()) {
+                        return Err(de::Error::custom("duplicate or empty connection id"));
+                    }
+                    let m = c.metadata;
+                    for ip in [&m.source_ip, &m.destination_ip].into_iter().flatten() {
+                        if !ip.is_empty() && ip.parse::<std::net::IpAddr>().is_err() {
+                            return Err(de::Error::custom("invalid ip address"));
+                        }
+                    }
+                    let source_port = m
+                        .source_port
+                        .map(Port::parse)
+                        .transpose()
+                        .map_err(|_| de::Error::custom("invalid source port"))?;
+                    let destination_port = m
+                        .destination_port
+                        .map(Port::parse)
+                        .transpose()
+                        .map_err(|_| de::Error::custom("invalid destination port"))?;
+                    connections.push(Connection {
+                        id: c.id,
+                        upload: c.upload,
+                        download: c.download,
+                        start: nonempty(c.start),
+                        metadata: Metadata {
+                            network: nonempty(m.network),
+                            inbound_type: nonempty(m.inbound_type),
+                            source_ip: nonempty(m.source_ip),
+                            destination_ip: nonempty(m.destination_ip),
+                            source_port,
+                            destination_port,
+                            host: nonempty(m.host),
+                            process: nonempty(m.process)
+                                .and_then(|p| p.rsplit(['/', '\\']).next().map(str::to_owned))
+                                .filter(|p| !p.is_empty()),
+                            pid: m.pid.filter(|p| *p != 0),
+                        },
+                        chains: c.chains,
+                        rule: nonempty(c.rule),
+                    });
+                }
+                Ok(ValidatedConnections(connections))
+            }
+        }
+
+        deserializer.deserialize_any(ConnectionsSeqVisitor)
+    }
 }
 
-// Go 的 nil slice 是 null；字段缺失仍是错误。 / A Go nil slice is null; an absent field is still invalid.
-fn connections<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<WireConnection>, D::Error> {
-    Ok(Option::<Vec<WireConnection>>::deserialize(d)?.unwrap_or_default())
+struct StreamingSnapshot(Snapshot);
+
+impl<'de> Deserialize<'de> for StreamingSnapshot {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct SnapshotVisitor;
+
+        impl<'de> Visitor<'de> for SnapshotVisitor {
+            type Value = StreamingSnapshot;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a Mihomo connections snapshot object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut upload_total = None;
+                let mut download_total = None;
+                let mut connections = None;
+
+                while let Some(key) = map.next_key::<&str>()? {
+                    match key {
+                        "uploadTotal" => {
+                            if upload_total.is_some() {
+                                return Err(de::Error::duplicate_field("uploadTotal"));
+                            }
+                            upload_total = Some(map.next_value::<u64>()?);
+                        }
+                        "downloadTotal" => {
+                            if download_total.is_some() {
+                                return Err(de::Error::duplicate_field("downloadTotal"));
+                            }
+                            download_total = Some(map.next_value::<u64>()?);
+                        }
+                        "connections" => {
+                            if connections.is_some() {
+                                return Err(de::Error::duplicate_field("connections"));
+                            }
+                            connections = Some(map.next_value::<ValidatedConnections>()?.0);
+                        }
+                        _ => {
+                            let _ = map.next_value::<de::IgnoredAny>()?;
+                        }
+                    }
+                }
+
+                Ok(StreamingSnapshot(Snapshot {
+                    upload_total: upload_total
+                        .ok_or_else(|| de::Error::missing_field("uploadTotal"))?,
+                    download_total: download_total
+                        .ok_or_else(|| de::Error::missing_field("downloadTotal"))?,
+                    connections: connections
+                        .ok_or_else(|| de::Error::missing_field("connections"))?,
+                }))
+            }
+        }
+
+        deserializer.deserialize_map(SnapshotVisitor)
+    }
 }
 
 #[derive(Deserialize)]
@@ -279,45 +409,54 @@ fn nonempty(s: Option<String>) -> Option<String> {
 }
 
 pub fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot, ProbeError> {
-    let wire: WireSnapshot =
+    let parsed: StreamingSnapshot =
         serde_json::from_slice(bytes).map_err(|_| ProbeError::InvalidSnapshot)?;
-    let mut ids = BTreeSet::new();
-    let mut connections = Vec::with_capacity(wire.connections.len());
-    for c in wire.connections {
-        if c.id.trim().is_empty() || !ids.insert(c.id.clone()) {
-            return Err(ProbeError::InvalidSnapshot);
-        }
-        let m = c.metadata;
-        for ip in [&m.source_ip, &m.destination_ip].into_iter().flatten() {
-            if !ip.is_empty() && ip.parse::<std::net::IpAddr>().is_err() {
-                return Err(ProbeError::InvalidSnapshot);
-            }
-        }
-        connections.push(Connection {
-            id: c.id,
-            upload: c.upload,
-            download: c.download,
-            start: nonempty(c.start),
-            metadata: Metadata {
-                network: nonempty(m.network),
-                inbound_type: nonempty(m.inbound_type),
-                source_ip: nonempty(m.source_ip),
-                destination_ip: nonempty(m.destination_ip),
-                source_port: m.source_port.map(Port::parse).transpose()?,
-                destination_port: m.destination_port.map(Port::parse).transpose()?,
-                host: nonempty(m.host),
-                process: nonempty(m.process)
-                    .and_then(|p| p.rsplit(['/', '\\']).next().map(str::to_owned))
-                    .filter(|p| !p.is_empty()),
-                pid: m.pid.filter(|p| *p != 0),
-            },
-            chains: c.chains,
-            rule: nonempty(c.rule),
-        });
+    Ok(parsed.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streaming_parser_validates_and_skips_unknown_fields() {
+        let payload = br#"{
+            "memory": 999999,
+            "uploadTotal": 120,
+            "downloadTotal": 340,
+            "extraNested": {"a": [1, 2, 3]},
+            "connections": [
+                {
+                    "id": "conn-1",
+                    "upload": 12,
+                    "download": 34,
+                    "rule": "Match",
+                    "chains": ["DIRECT"],
+                    "unknownField": true,
+                    "metadata": {
+                        "network": "tcp",
+                        "sourceIP": "127.0.0.1",
+                        "sourcePort": "54321",
+                        "destinationIP": "1.1.1.1",
+                        "destinationPort": 443,
+                        "host": "example.com",
+                        "process": "C:\\Program Files\\App\\demo.exe",
+                        "pid": 42
+                    }
+                }
+            ]
+        }"#;
+        let snap = parse_snapshot(payload).expect("valid snapshot");
+        assert_eq!(snap.upload_total, 120);
+        assert_eq!(snap.download_total, 340);
+        assert_eq!(snap.connections.len(), 1);
+        assert_eq!(snap.connections[0].metadata.process.as_deref(), Some("demo.exe"));
+        assert_eq!(snap.connections[0].metadata.source_port, Some(54321));
+
+        let null_conns = br#"{"uploadTotal":0,"downloadTotal":0,"connections":null}"#;
+        assert!(parse_snapshot(null_conns).unwrap().connections.is_empty());
+
+        let dup_ids = br#"{"uploadTotal":0,"downloadTotal":0,"connections":[{"id":"a","upload":0,"download":0,"metadata":{}},{"id":"a","upload":0,"download":0,"metadata":{}}]}"#;
+        assert_eq!(parse_snapshot(dup_ids).unwrap_err(), ProbeError::InvalidSnapshot);
     }
-    Ok(Snapshot {
-        connections,
-        upload_total: wire.upload_total,
-        download_total: wire.download_total,
-    })
 }

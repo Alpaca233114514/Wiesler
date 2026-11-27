@@ -73,6 +73,13 @@ pub async fn inspect_dns() -> Result<wiesler::probes::privacy::DnsInspection, St
 }
 
 #[tauri::command]
+pub async fn probe_https_204() -> Result<wiesler::probes::egress::HttpsProbeResult, String> {
+    tauri::async_runtime::spawn_blocking(wiesler::probes::egress::probe_https_204)
+        .await
+        .map_err(|_| "HTTPS 204 探测任务失败".to_string())
+}
+
+#[tauri::command]
 pub async fn egress_address(
     controller: Option<String>,
     via_proxy: bool,

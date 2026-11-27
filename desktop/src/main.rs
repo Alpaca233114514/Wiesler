@@ -104,6 +104,7 @@ fn main() {
             commands::system_snapshot,
             commands::egress_address,
             commands::inspect_dns,
+            commands::probe_https_204,
             dns_capture::dns_capture_start,
             dns_capture::dns_capture_snapshot,
             dns_capture::dns_capture_probe,
