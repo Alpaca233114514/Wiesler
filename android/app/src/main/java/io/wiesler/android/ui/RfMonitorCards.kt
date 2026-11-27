@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -143,7 +145,9 @@ fun RfMonitoringSection(
 
         // 检测 1：主动多卡采集与防冻结去重状态 / Check 1: Active dual-SIM capture & anti-freeze deduplication
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Max),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             MetricChipTile(
@@ -152,7 +156,7 @@ fun RfMonitoringSection(
                 subtitle = health.lastFreshAtMs?.let { "更新 ${timeFmt.format(Date(it))}" } ?: "尚无新鲜样本",
                 accentColor = semantic.download,
                 compact = true,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f).fillMaxHeight()
             )
             MetricChipTile(
                 label = "过滤缓存帧",
@@ -160,7 +164,7 @@ fun RfMonitoringSection(
                 subtitle = if (health.frozenSlotCount > 0) "${health.frozenSlotCount} 卡缓存冻结" else "时间戳去重正常",
                 accentColor = if (health.frozenSlotCount > 0) semantic.warning else MaterialTheme.colorScheme.onSurface,
                 compact = true,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f).fillMaxHeight()
             )
             MetricChipTile(
                 label = "污染风险分",
@@ -168,7 +172,7 @@ fun RfMonitoringSection(
                 subtitle = assess.severity.label,
                 accentColor = severityAccent,
                 compact = true,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f).fillMaxHeight()
             )
         }
 
@@ -195,10 +199,21 @@ fun RfMonitoringSection(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         Icon(Icons.Rounded.Security, contentDescription = null, tint = severityAccent, modifier = Modifier.size(18.dp))
-                        Text("多卡污染评分器", style = MaterialTheme.typography.labelLarge, color = severityAccent)
+                        Text(
+                            "多卡污染评分器",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = severityAccent,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
+                    Spacer(modifier = Modifier.width(8.dp))
                     StatusPill(
                         text = if (assess.dualSimCoincidence) "双卡跨网并发" else assess.severity.label,
                         containerColor = severityAccent.copy(alpha = 0.18f),
@@ -258,12 +273,23 @@ fun RfMonitoringSection(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         Icon(Icons.Rounded.TrackChanges, contentDescription = null, tint = attributionAccent, modifier = Modifier.size(18.dp))
-                        Text("射频 / 代理联合归因（60s 对齐）", style = MaterialTheme.typography.labelLarge, color = attributionAccent)
+                        Text(
+                            "射频 / 代理归因 · 60s",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = attributionAccent,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
+                    Spacer(modifier = Modifier.width(8.dp))
                     StatusPill(
-                        text = "置信度 · ${attr.confidence}",
+                        text = "置信度 ${attr.confidence}",
                         containerColor = attributionAccent.copy(alpha = 0.16f),
                         contentColor = attributionAccent
                     )
@@ -395,6 +421,7 @@ private fun RfSlotCard(slot: RfSlotSummary) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                Spacer(modifier = Modifier.width(8.dp))
                 StatusPill(
                     text = if (!slot.inService) "无服务" else slot.rat.label,
                     containerColor = if (hasDanger) semantic.danger.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceContainerHighest,
