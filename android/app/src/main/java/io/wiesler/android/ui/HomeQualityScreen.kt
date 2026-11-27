@@ -39,6 +39,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -587,6 +588,12 @@ private fun QualityHistoryChart(
     rttColor: Color
 ) {
     val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val areaPath = remember { Path() }
+    val linePath = remember { Path() }
+    val rttPath = remember { Path() }
+    val scoreFillBrush = remember(scoreColor) {
+        Brush.verticalGradient(listOf(scoreColor.copy(alpha = 0.16f), Color.Transparent))
+    }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -612,51 +619,54 @@ private fun QualityHistoryChart(
                 }
                 val denom = maxOf(1, points.size - 1)
 
-                val scorePts = points.mapIndexed { idx, pt ->
+                areaPath.reset()
+                linePath.reset()
+                var lastScorePt = Offset.Zero
+                points.forEachIndexed { idx, pt ->
                     val x = if (points.size == 1) w else w * idx / denom.toFloat()
                     val y = h - (pt.score / 100f).coerceIn(0f, 1f) * h
-                    Offset(x, y)
+                    if (idx == 0) {
+                        areaPath.moveTo(x, h)
+                        areaPath.lineTo(x, y)
+                        linePath.moveTo(x, y)
+                    } else {
+                        areaPath.lineTo(x, y)
+                        linePath.lineTo(x, y)
+                    }
+                    lastScorePt = Offset(x, y)
                 }
-                if (scorePts.size > 1) {
-                    val area = Path().apply {
-                        moveTo(scorePts.first().x, h)
-                        scorePts.forEach { lineTo(it.x, it.y) }
-                        lineTo(scorePts.last().x, h)
-                        close()
-                    }
+                if (points.size > 1) {
+                    areaPath.lineTo(lastScorePt.x, h)
+                    areaPath.close()
+                    drawPath(path = areaPath, brush = scoreFillBrush)
                     drawPath(
-                        path = area,
-                        brush = Brush.verticalGradient(listOf(scoreColor.copy(alpha = 0.16f), Color.Transparent))
-                    )
-                    val line = Path().apply {
-                        moveTo(scorePts.first().x, scorePts.first().y)
-                        for (i in 1 until scorePts.size) lineTo(scorePts[i].x, scorePts[i].y)
-                    }
-                    drawPath(
-                        path = line,
+                        path = linePath,
                         color = scoreColor,
                         style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
                     )
                 }
-                drawCircle(scoreColor, radius = 2.6.dp.toPx(), center = scorePts.last())
+                drawCircle(scoreColor, radius = 2.6.dp.toPx(), center = lastScorePt)
 
-                val peakRtt = points.mapNotNull { it.rttMs }.maxOrNull() ?: 0.0
+                var peakRtt = 0.0
+                for (pt in points) {
+                    val r = pt.rttMs
+                    if (r != null && r > peakRtt) peakRtt = r
+                }
                 val maxRtt = maxOf(150.0, peakRtt * 1.25)
-                val rttPath = Path()
+                rttPath.reset()
                 var rttStarted = false
                 var lastRttPt: Offset? = null
                 points.forEachIndexed { idx, pt ->
                     val rtt = pt.rttMs ?: return@forEachIndexed
                     val x = if (points.size == 1) w else w * idx / denom.toFloat()
                     val y = h - (rtt / maxRtt).toFloat().coerceIn(0f, 1f) * h
-                    val offset = Offset(x, y)
                     if (!rttStarted) {
                         rttPath.moveTo(x, y)
                         rttStarted = true
                     } else {
                         rttPath.lineTo(x, y)
                     }
-                    lastRttPt = offset
+                    lastRttPt = Offset(x, y)
                 }
                 if (rttStarted) {
                     drawPath(

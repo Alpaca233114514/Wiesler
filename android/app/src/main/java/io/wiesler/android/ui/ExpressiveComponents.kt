@@ -40,6 +40,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -534,6 +535,14 @@ fun DualSeriesAreaChart(
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     val hasValid = samples.any { it != null }
     val peak = maxOf(1024.0, samples.filterNotNull().maxOfOrNull { maxOf(it.rx, it.tx) } ?: 0.0)
+    val linePath = remember { Path() }
+    val areaPath = remember { Path() }
+    val downloadFill = remember(semantic.download) {
+        Brush.verticalGradient(listOf(semantic.download.copy(alpha = 0.16f), semantic.download.copy(alpha = 0.0f)))
+    }
+    val uploadFill = remember(semantic.upload) {
+        Brush.verticalGradient(listOf(semantic.upload.copy(alpha = 0.16f), semantic.upload.copy(alpha = 0.0f)))
+    }
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
@@ -569,50 +578,52 @@ fun DualSeriesAreaChart(
                 if (!hasValid) return@Canvas
                 // 分别绘制下载/上传曲线与渐变填充，null 样本处严格断开。
                 // Draw download/upload paths with area fill while breaking segments on null gaps.
-                for (isUpload in listOf(false, true)) {
+                for (pass in 0..1) {
+                    val isUpload = pass == 1
                     val strokeColor = if (isUpload) semantic.upload else semantic.download
-                    val linePath = Path()
-                    val segments = ArrayList<MutableList<Offset>>()
-                    samples.forEachIndexed { index, rate ->
-                        if (rate == null) {
-                            if (segments.lastOrNull()?.isNotEmpty() == true) segments.add(ArrayList())
-                            return@forEachIndexed
-                        }
-                        val x = w * (59 - samples.size + 1 + index).coerceIn(0, 59) / 59f
-                        val value = if (isUpload) rate.tx else rate.rx
-                        val y = h - (value / peak * h).toFloat().coerceIn(0f, h)
-                        val pt = Offset(x, y)
-                        if (segments.isEmpty()) segments.add(ArrayList())
-                        segments.last().add(pt)
-                    }
-                    for (seg in segments) {
-                        if (seg.isEmpty()) continue
-                        if (seg.size > 1) {
-                            val area = Path().apply {
-                                moveTo(seg.first().x, h)
-                                seg.forEach { lineTo(it.x, it.y) }
-                                lineTo(seg.last().x, h)
-                                close()
-                            }
-                            drawPath(
-                                path = area,
-                                brush = Brush.verticalGradient(
-                                    listOf(strokeColor.copy(alpha = 0.16f), strokeColor.copy(alpha = 0.0f))
-                                )
-                            )
-                        }
+                    val fillBrush = if (isUpload) uploadFill else downloadFill
+                    val strokeStyle = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    val dotRadius = 2.6.dp.toPx()
+                    var segStart = -1
+                    fun flushSegment(endIdx: Int) {
+                        if (segStart < 0 || endIdx < segStart) return
                         linePath.reset()
-                        linePath.moveTo(seg.first().x, seg.first().y)
-                        for (i in 1 until seg.size) linePath.lineTo(seg[i].x, seg[i].y)
-                        if (seg.size > 1) {
-                            drawPath(
-                                path = linePath,
-                                color = strokeColor,
-                                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
-                            )
+                        areaPath.reset()
+                        var lastPt = Offset.Zero
+                        for (idx in segStart..endIdx) {
+                            val rate = samples[idx] ?: continue
+                            val x = w * (59 - samples.size + 1 + idx).coerceIn(0, 59) / 59f
+                            val value = if (isUpload) rate.tx else rate.rx
+                            val y = h - (value / peak * h).toFloat().coerceIn(0f, h)
+                            if (idx == segStart) {
+                                linePath.moveTo(x, y)
+                                areaPath.moveTo(x, h)
+                                areaPath.lineTo(x, y)
+                            } else {
+                                linePath.lineTo(x, y)
+                                areaPath.lineTo(x, y)
+                            }
+                            lastPt = Offset(x, y)
                         }
-                        drawCircle(strokeColor, radius = 2.6.dp.toPx(), center = seg.last())
+                        if (endIdx > segStart) {
+                            areaPath.lineTo(lastPt.x, h)
+                            areaPath.close()
+                            drawPath(path = areaPath, brush = fillBrush)
+                            drawPath(path = linePath, color = strokeColor, style = strokeStyle)
+                        }
+                        drawCircle(strokeColor, radius = dotRadius, center = lastPt)
                     }
+                    for (index in samples.indices) {
+                        if (samples[index] == null) {
+                            if (segStart >= 0) {
+                                flushSegment(index - 1)
+                                segStart = -1
+                            }
+                        } else if (segStart < 0) {
+                            segStart = index
+                        }
+                    }
+                    if (segStart >= 0) flushSegment(samples.lastIndex)
                 }
             }
         }
@@ -639,14 +650,19 @@ fun ConnectionSparkline(
         return
     }
     val peak = maxOf(1.0, samples.filterNotNull().maxOfOrNull { maxOf(it.rx, it.tx) } ?: 1.0)
+    val sparkPath = remember { Path() }
     Canvas(modifier = modifier.height(30.dp)) {
         val w = size.width
         val h = size.height
         val bottom = h - 2.dp.toPx()
+        val strokeStyle = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round)
+        val dotRadius = 2.2.dp.toPx()
+        val denom = maxOf(1, samples.size - 1).toFloat()
         drawLine(baseline.copy(alpha = 0.5f), Offset(0f, bottom), Offset(w, bottom), strokeWidth = 0.8.dp.toPx())
-        for (isUpload in listOf(false, true)) {
+        for (pass in 0..1) {
+            val isUpload = pass == 1
             val color = if (isUpload) semantic.upload else semantic.download
-            val path = Path()
+            sparkPath.reset()
             var connected = false
             var last: Offset? = null
             samples.forEachIndexed { idx, rate ->
@@ -654,16 +670,15 @@ fun ConnectionSparkline(
                     connected = false
                     return@forEachIndexed
                 }
-                val denom = maxOf(1, samples.size - 1)
-                val x = w * idx / denom.toFloat()
+                val x = w * idx / denom
                 val v = if (isUpload) rate.tx else rate.rx
                 val y = bottom - (v / peak * (bottom - 3.dp.toPx())).toFloat().coerceIn(0f, bottom)
-                if (connected) path.lineTo(x, y) else path.moveTo(x, y)
+                if (connected) sparkPath.lineTo(x, y) else sparkPath.moveTo(x, y)
                 connected = true
                 last = Offset(x, y)
             }
-            drawPath(path, color = color, style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round))
-            last?.let { drawCircle(color, radius = 2.2.dp.toPx(), center = it) }
+            drawPath(sparkPath, color = color, style = strokeStyle)
+            last?.let { drawCircle(color, radius = dotRadius, center = it) }
         }
     }
 }

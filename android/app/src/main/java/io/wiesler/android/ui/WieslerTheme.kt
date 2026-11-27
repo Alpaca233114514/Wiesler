@@ -18,7 +18,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -247,10 +247,10 @@ fun WieslerExpressiveTheme(
     val semantic = if (darkTheme) DarkSemanticColors else LightSemanticColors
     val view = LocalView.current
     if (!view.isInEditMode) {
-        SideEffect {
-            // 同步系统状态栏与导航栏图标前景色，避免系统浅色模式叠加 App 深色主题时图标黑底黑字。
-            // Sync system bar icon contrast with the app's active dark/light theme.
-            val window = view.context.findActivity()?.window ?: return@SideEffect
+        LaunchedEffect(view, darkTheme) {
+            // 仅在深浅色主题切换时同步系统栏图标前景色，避免每次实时数据重组触发 WindowInsetsController IPC。
+            // Sync system bar icon contrast only when darkTheme changes instead of every recomposition.
+            val window = view.context.findActivity()?.window ?: return@LaunchedEffect
             val insetsController = WindowCompat.getInsetsController(window, view)
             insetsController.isAppearanceLightStatusBars = !darkTheme
             insetsController.isAppearanceLightNavigationBars = !darkTheme

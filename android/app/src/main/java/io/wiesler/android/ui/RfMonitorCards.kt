@@ -22,6 +22,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,7 +56,7 @@ fun RfMonitoringSection(
     val health = snapshot.captureHealth
     val assess = snapshot.assessment
     val attr = snapshot.attribution
-    val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.ROOT)
+    val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.ROOT) }
 
     val severityAccent = when (assess.severity) {
         RfSeverity.SEVERE_POLLUTION,
@@ -356,6 +357,10 @@ private fun RfSlotRow(slot: RfSlotSummary) {
 private fun RfMiniTrendChart(trend: List<RfTrendPoint>) {
     val semantic = LocalWieslerColors.current
     val gridColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+    val sinrPath = remember { Path() }
+    val rsrpPath = remember { Path() }
+    val sinrStroke = remember { Stroke(width = 2f, cap = StrokeCap.Round) }
+    val rsrpStroke = remember { Stroke(width = 1.5f, cap = StrokeCap.Round) }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -371,7 +376,7 @@ private fun RfMiniTrendChart(trend: List<RfTrendPoint>) {
             val n = trend.size.coerceAtLeast(2)
             val stepX = w / (n - 1).toFloat()
 
-            val sinrPath = Path()
+            sinrPath.reset()
             var started = false
             trend.forEachIndexed { idx, pt ->
                 val sinr = pt.sinrDb ?: return@forEachIndexed
@@ -389,10 +394,10 @@ private fun RfMiniTrendChart(trend: List<RfTrendPoint>) {
                 }
             }
             if (started) {
-                drawPath(sinrPath, color = semantic.download, style = Stroke(width = 2f, cap = StrokeCap.Round))
+                drawPath(sinrPath, color = semantic.download, style = sinrStroke)
             }
 
-            val rsrpPath = Path()
+            rsrpPath.reset()
             var rsrpStarted = false
             trend.forEachIndexed { idx, pt ->
                 val rsrp = pt.rsrpDbm ?: return@forEachIndexed
@@ -407,7 +412,7 @@ private fun RfMiniTrendChart(trend: List<RfTrendPoint>) {
                 }
             }
             if (rsrpStarted) {
-                drawPath(rsrpPath, color = semantic.upload.copy(alpha = 0.72f), style = Stroke(width = 1.5f, cap = StrokeCap.Round))
+                drawPath(rsrpPath, color = semantic.upload.copy(alpha = 0.72f), style = rsrpStroke)
             }
         }
     }

@@ -76,6 +76,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
@@ -120,6 +121,11 @@ private data class PulseEdge(
 private class GraphHitState {
     var nodes: List<GraphNodeBox> = emptyList()
     var edges: List<Triple<StudioFlow, Offset, Offset>> = emptyList()
+    var pulseEdges: List<PulseEdge> = emptyList()
+    var cachedGridW: Float = -1f
+    var cachedGridH: Float = -1f
+    var cachedGridStep: Float = -1f
+    var cachedGridPoints: List<Offset> = emptyList()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -253,7 +259,9 @@ fun GraphWorkbenchScreen(
                 InteractiveHostGraphCanvas(
                     groups = state.studioHostGroups,
                     selectedId = state.studioSelectedId,
-                    animatePulses = state.preferences.pulseAnimation && !state.studioFrozen && !state.capturePaused,
+                    animatePulses = state.preferences.pulseAnimation &&
+                        state.preferences.performanceMode.allowPulseAnimation &&
+                        !state.studioFrozen && !state.capturePaused,
                     zoom = zoom,
                     pan = pan,
                     customPositions = customPositions,
@@ -498,10 +506,13 @@ private fun InteractiveHostGraphCanvas(
                 Text(emptyMessage, style = MaterialTheme.typography.bodyMedium, color = mutedColor)
             }
         } else {
-            // 使用普通引用保存命中几何，严禁在 Canvas.onDraw 内写 mutableStateOf 引发无限重绘。
-            // Keep hit-test geometry in a plain holder so Canvas.onDraw never mutates Compose State.
+            // 使用普通引用保存命中几何与脉冲边，严禁在 Canvas.onDraw 内写 mutableStateOf 引发二次重组。
+            // Keep hit-test geometry and pulse edges in a plain holder so Canvas.onDraw never mutates Compose State.
             val hitState = remember { GraphHitState() }
-            var pulseEdges by remember { mutableStateOf<List<PulseEdge>>(emptyList()) }
+            val edgePath = remember { Path() }
+            val hasActiveTraffic = remember(groups, animatePulses) {
+                animatePulses && groups.any { g -> g.flows.any { (it.rx ?: 0.0) > 0.0 || (it.tx ?: 0.0) > 0.0 } }
+            }
             var draggingKey by remember { mutableStateOf<String?>(null) }
 
             Canvas(
@@ -564,14 +575,32 @@ private fun InteractiveHostGraphCanvas(
                 val step = 28.dp.toPx()
                 val dotRadius = 0.9.dp.toPx()
                 val gridDotColor = semantic.graphGrid.copy(alpha = 0.45f)
-                var gx = 0f
-                while (gx <= w) {
-                    var gy = 0f
-                    while (gy <= h) {
-                        drawCircle(gridDotColor, dotRadius, Offset(gx, gy))
-                        gy += step
+                // 缓存点阵坐标并以单次 drawPoints 提交 GPU，替代逐点 150+ 次 drawCircle 调用。
+                // Cache background dot-grid coordinates and draw in a single batched drawPoints call.
+                if (hitState.cachedGridW != w || hitState.cachedGridH != h || hitState.cachedGridStep != step) {
+                    val pts = ArrayList<Offset>()
+                    var gx = 0f
+                    while (gx <= w) {
+                        var gy = 0f
+                        while (gy <= h) {
+                            pts.add(Offset(gx, gy))
+                            gy += step
+                        }
+                        gx += step
                     }
-                    gx += step
+                    hitState.cachedGridW = w
+                    hitState.cachedGridH = h
+                    hitState.cachedGridStep = step
+                    hitState.cachedGridPoints = pts
+                }
+                if (hitState.cachedGridPoints.isNotEmpty()) {
+                    drawPoints(
+                        points = hitState.cachedGridPoints,
+                        pointMode = PointMode.Points,
+                        color = gridDotColor,
+                        strokeWidth = dotRadius * 2f,
+                        cap = StrokeCap.Round
+                    )
                 }
 
                 val drawn = groups.flatMap { it.flows }
@@ -669,11 +698,10 @@ private fun InteractiveHostGraphCanvas(
                         }
                         val strokeW = (1.2f + min(2.2f, (log2(1.0 + rx + tx) / 14.0).toFloat())).dp.toPx()
                         val bend = min(68.dp.toPx(), ((end.x - start.x) / 2f).coerceAtLeast(16.dp.toPx()))
-                        val path = Path().apply {
-                            moveTo(start.x, start.y)
-                            cubicTo(start.x + bend, start.y, end.x - bend, end.y, end.x, end.y)
-                        }
-                        drawPath(path, color = edgeColor, style = Stroke(width = strokeW, cap = StrokeCap.Round))
+                        edgePath.reset()
+                        edgePath.moveTo(start.x, start.y)
+                        edgePath.cubicTo(start.x + bend, start.y, end.x - bend, end.y, end.x, end.y)
+                        drawPath(edgePath, color = edgeColor, style = Stroke(width = strokeW, cap = StrokeCap.Round))
 
                         if (animatePulses && (tx > 0.0 || rx > 0.0)) {
                             nextPulses.add(PulseEdge(start = start, end = end, hasRx = rx > 0.0, hasTx = tx > 0.0))
@@ -748,14 +776,12 @@ private fun InteractiveHostGraphCanvas(
                 canvas.restore()
                 hitState.nodes = builtNodes
                 hitState.edges = builtEdges
-                if (pulseEdges != nextPulses) {
-                    pulseEdges = nextPulses
-                }
+                hitState.pulseEdges = nextPulses
             }
 
-            if (animatePulses && pulseEdges.isNotEmpty()) {
+            if (hasActiveTraffic) {
                 PulseOverlayCanvas(
-                    edges = pulseEdges,
+                    hitState = hitState,
                     pan = pan,
                     zoom = zoom,
                     uploadColor = semantic.upload,
@@ -768,7 +794,7 @@ private fun InteractiveHostGraphCanvas(
 
 @Composable
 private fun PulseOverlayCanvas(
-    edges: List<PulseEdge>,
+    hitState: GraphHitState,
     pan: Offset,
     zoom: Float,
     uploadColor: Color,
@@ -784,6 +810,8 @@ private fun PulseOverlayCanvas(
         label = "PulseProgress"
     )
     Canvas(modifier = Modifier.fillMaxSize()) {
+        val edges = hitState.pulseEdges
+        if (edges.isEmpty()) return@Canvas
         val canvas = drawContext.canvas.nativeCanvas
         canvas.save()
         canvas.translate(pan.x, pan.y)

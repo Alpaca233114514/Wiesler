@@ -20,7 +20,6 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -250,11 +249,11 @@ fun MonitorScreen(
                     )
                 }
                 if (state.packetLoss.running) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(2.5.dp),
-                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                    // 用滑窗采样进度条替代无限 120fps 动画，避免探测期间持续触发整屏重绘与 GPU 模糊。
+                    // Replace indeterminate continuous animation with sliding-window progress to avoid 120fps redraws.
+                    MinimalLinearBar(
+                        progress = (state.packetLoss.sent / 60f).coerceIn(0.08f, 1f),
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
                 Row(
