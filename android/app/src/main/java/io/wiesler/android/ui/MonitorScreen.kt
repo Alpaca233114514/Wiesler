@@ -65,6 +65,9 @@ fun MonitorScreen(
     onJumpOverseasConnections: () -> Unit,
     onStartLoss: (String) -> Unit,
     onStopLoss: () -> Unit,
+    onToggleRfMonitor: (Boolean) -> Unit,
+    onRequestRfPermissions: () -> Unit,
+    onResetRfMonitor: () -> Unit,
     onRequestUsageAccess: () -> Unit,
     onRefreshUsage: () -> Unit,
     onRefreshEgress: () -> Unit,
@@ -97,6 +100,15 @@ fun MonitorScreen(
                 egress = state.egress,
                 controllerEnabled = state.controllerEnabled,
                 onRefresh = onRefreshEgress
+            )
+        }
+
+        item(key = "rf_monitoring") {
+            RfMonitoringSection(
+                snapshot = state.rfDiagnostics,
+                onToggleRf = onToggleRfMonitor,
+                onRequestPermissions = onRequestRfPermissions,
+                onResetRf = onResetRfMonitor
             )
         }
 

@@ -310,7 +310,8 @@ object PrivacyInspector {
         report: PrivacyReport,
         summary: PrivacySummary,
         activeRun: ActivePrivacyRun?,
-        env: DeviceEnvironmentInfo?
+        env: DeviceEnvironmentInfo?,
+        rfDiagnostics: RfDiagnosticsSnapshot? = null
     ): String {
         val root = JSONObject()
         root.put("schemaVersion", 1)
@@ -318,6 +319,9 @@ object PrivacyInspector {
         root.put("observedAt", report.observedAt ?: JSONObject.NULL)
         root.put("source", report.source)
         root.put("summary", JSONObject().put("title", summary.title).put("detail", summary.detail))
+        if (rfDiagnostics != null) {
+            root.put("rfDiagnostics", rfDiagnostics.toJsonObject())
+        }
         root.put("policy", JSONObject()
             .put("expectProxy", report.policy.expectProxy)
             .put("uploadBytesPerSecond", report.policy.uploadBytesPerSecond))

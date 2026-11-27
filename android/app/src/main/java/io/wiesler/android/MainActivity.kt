@@ -59,6 +59,16 @@ class MainActivity : ComponentActivity() {
     private val mihomoTrend = ArrayList<Rate?>()
     private val requestLogs = ArrayDeque<RequestLog>()
     private val lossWindow = PacketLossWindow()
+    private val timedPings = ArrayDeque<TimedPingEvidence>()
+    private val rfEngine = RfMonitorEngine()
+    private var rfCollector: RfCellularCollector? = null
+    private var rfEnabled = false
+    private var rfStatusOverride: String? = null
+    private var lastControllerErrorAtMs: Long? = null
+    private var lastControllerErrorMessage: String? = null
+    private var cellularValidated: Boolean? = null
+    private var cellularLostAtMs: Long? = null
+    private var lastSevereRfBannerAtMs = 0L
 
     private var foreground = false
     private var paused = false
@@ -124,6 +134,23 @@ class MainActivity : ComponentActivity() {
         if (uri != null) importDatabase(uri)
     }
 
+    private val rfPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val granted = RfCellularCollector.REQUIRED_PERMISSIONS.all { grants[it] == true } ||
+            RfCellularCollector.hasPermissions(this)
+        if (granted) {
+            rfStatusOverride = null
+            setRfMonitoringEnabled(true)
+            showTopBanner("射频监测权限已就绪", "已启动主动双卡蜂窝射频检测", BannerTone.SUCCESS, durationMs = 3200L)
+        } else {
+            rfEnabled = false
+            rfStatusOverride = "权限未授予，无法主动读取双卡基带 RSRP/RSRQ/SINR"
+            showTopBanner("未获得定位或手机状态权限", "请在系统设置中授权后开启射频检测", BannerTone.WARNING, durationMs = 4500L)
+            publishUiState()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -137,7 +164,48 @@ class MainActivity : ComponentActivity() {
         overseasExits = prefs.getStringSet("overseasExits", emptySet())?.toSet() ?: emptySet()
         studio.overseasExits = overseasExits
         forwardEnabled = prefs.getBoolean("forwardEnabled", false)
+        rfEnabled = prefs.getBoolean("rfEnabled", false)
         controllerEnabled = prefs.getBoolean("controllerEnabled", prefs.contains("controller"))
+        rfCollector = RfCellularCollector(
+            context = applicationContext,
+            executor = worker,
+            onSample = { sample ->
+                handler.post {
+                    if (isDestroyed) return@post
+                    rfEngine.ingest(sample)
+                    rfStatusOverride = null
+                    val snap = evaluateRfSnapshot()
+                    if (snap.assessment.severity == RfSeverity.SEVERE_POLLUTION) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastSevereRfBannerAtMs >= 30_000L) {
+                            lastSevereRfBannerAtMs = now
+                            showTopBanner(
+                                title = "检测到环境级宽带通信污染",
+                                detail = snap.assessment.detail,
+                                tone = BannerTone.ERROR,
+                                durationMs = 6000L
+                            )
+                        }
+                    }
+                    publishUiState()
+                }
+            },
+            onCellularLinkState = { validated, lostAt ->
+                handler.post {
+                    if (isDestroyed) return@post
+                    cellularValidated = validated
+                    if (lostAt != null) cellularLostAtMs = lostAt
+                    publishUiState()
+                }
+            },
+            onStatusError = { msg ->
+                handler.post {
+                    if (isDestroyed) return@post
+                    rfStatusOverride = msg
+                    publishUiState()
+                }
+            }
+        )
         secret = runCatching { ControllerSecretStore(prefs).read(controller) }.getOrElse {
             controllerEnabled = false
             showTopBanner("无法解密控制器密钥", "Keystore 密钥不可用，请重新配置", BannerTone.ERROR, durationMs = 5500L)
@@ -190,6 +258,9 @@ class MainActivity : ComponentActivity() {
         handler.removeCallbacks(tick)
         handler.post(tick)
         if (controllerEnabled && !controllerBusy && !capturePaused) fetchConnections()
+        if (rfEnabled && RfCellularCollector.hasPermissions(this)) {
+            rfCollector?.start()
+        }
         refreshSystemProbes(force = true)
         if (uiState.activeTab == WieslerTab.MONITOR && cachedUsageAllowed) loadUsage()
         publishUiState()
@@ -204,11 +275,13 @@ class MainActivity : ComponentActivity() {
         studio.resetBaseline()
         resetForward()
         if (lossRunning) stopLoss("已进入后台，监控停止")
+        rfCollector?.stop()
         persistState(async = false)
         super.onPause()
     }
 
     override fun onDestroy() {
+        rfCollector?.stop()
         lossProbe?.cancel()
         lossWorker.shutdownNow()
         worker.shutdownNow()
@@ -309,6 +382,15 @@ class MainActivity : ComponentActivity() {
         },
         onStopLoss = {
             stopLoss("已停止 · 保留最后结果")
+            publishUiState()
+        },
+        onToggleRfMonitor = { enabled -> setRfMonitoringEnabled(enabled) },
+        onRequestRfPermissions = {
+            rfPermissionLauncher.launch(RfCellularCollector.REQUIRED_PERMISSIONS)
+        },
+        onResetRfMonitor = {
+            rfEngine.reset()
+            rfStatusOverride = null
             publishUiState()
         },
         onRequestUsageAccess = {
@@ -684,6 +766,7 @@ class MainActivity : ComponentActivity() {
                 result.fold(
                     onSuccess = { snapshot ->
                         controllerHealthy = true
+                        lastControllerErrorMessage = null
                         availableExitsCache = snapshot.exits
                         if (studio.live) {
                             studio.accept(
@@ -735,6 +818,8 @@ class MainActivity : ComponentActivity() {
                             else -> "读取失败：${err.message?.take(60) ?: "请检查地址、网络与证书"}"
                         }
                         Log.w("Wiesler", "Controller /connections failed ($address, http=$httpStatus): ${err.javaClass.simpleName}: ${err.message}")
+                        lastControllerErrorAtMs = System.currentTimeMillis()
+                        lastControllerErrorMessage = rawMessage
                         appendRequestLog("Mihomo /connections", httpStatus, rawMessage)
                         connectionState = "${httpStatus?.let { "HTTP $it" } ?: "未取得状态码"} · $rawMessage"
                         if (notifyNextControllerError || wasHealthy) {
@@ -883,7 +968,13 @@ class MainActivity : ComponentActivity() {
         val policy = PrivacyPolicy(uiPrefs.expectProxy, uiPrefs.uploadThresholdKib.toLong() * 1024L)
         val report = PrivacyInspector.analyze(studio.current, policy, if (studio.live) "mihomo" else "demo")
         val summary = PrivacyInspector.summarize(report)
-        val json = PrivacyInspector.exportJson(report, summary, uiState.activePrivacyRun, uiState.deviceEnvironment)
+        val json = PrivacyInspector.exportJson(
+            report,
+            summary,
+            uiState.activePrivacyRun,
+            uiState.deviceEnvironment,
+            evaluateRfSnapshot()
+        )
         uiState = uiState.copy(exportedPrivacyJson = json)
         return json
     }
@@ -1043,6 +1134,8 @@ class MainActivity : ComponentActivity() {
                 if (isDestroyed || !foreground || !lossRunning || generation != lossGeneration) return@post
                 lossProbe = null
                 lossWindow.add(result)
+                timedPings.addLast(TimedPingEvidence(System.currentTimeMillis(), result.outcome, result.rttMs))
+                while (timedPings.size > 60) timedPings.removeFirst()
                 lossStatus = "$address · ${lossTimeFmt.format(Date())} · ${result.message}"
                 publishUiState()
                 handler.postDelayed(lossTick, 1000)
@@ -1119,10 +1212,59 @@ class MainActivity : ComponentActivity() {
         return "网络：${networkSummary()}\n系统联网验证：${if (verified) "已通过" else "未通过 / 未知"}\n接口：${properties?.interfaceName ?: "未知"}\n本地地址：${properties?.linkAddresses?.joinToString() ?: "未知"}\nDNS：${properties?.dnsServers?.joinToString { it.hostAddress ?: "未知" } ?: "未知"}\nPrivate DNS：$privateDns\nMTU：${properties?.mtu ?: "未知"}"
     }
 
+    private fun setRfMonitoringEnabled(enabled: Boolean) {
+        if (enabled && !RfCellularCollector.hasPermissions(this)) {
+            rfPermissionLauncher.launch(RfCellularCollector.REQUIRED_PERMISSIONS)
+            return
+        }
+        rfEnabled = enabled
+        getPreferences(0).edit().putBoolean("rfEnabled", enabled).apply()
+        rfStatusOverride = null
+        if (enabled) {
+            if (foreground) rfCollector?.start()
+        } else {
+            rfCollector?.stop()
+        }
+        publishUiState()
+    }
+
+    private fun evaluateRfSnapshot(): RfDiagnosticsSnapshot {
+        val nowMs = System.currentTimeMillis()
+        val egressState = uiState.egress
+        val link = RfLinkEvidence(
+            nowMs = nowMs,
+            recentPings = timedPings.toList(),
+            controllerEnabled = controllerEnabled,
+            controllerHealthy = controllerHealthy,
+            lastControllerErrorAtMs = lastControllerErrorAtMs,
+            lastControllerError = lastControllerErrorMessage,
+            cellularValidated = cellularValidated,
+            cellularLostAtMs = cellularLostAtMs,
+            systemEgressOk = when {
+                egressState.system != null -> true
+                egressState.systemError != null -> false
+                else -> null
+            },
+            proxyEgressOk = when {
+                egressState.proxy != null -> true
+                egressState.proxyError != null && controllerEnabled -> false
+                else -> null
+            }
+        )
+        return rfEngine.evaluate(
+            nowMs = nowMs,
+            active = rfEnabled && (rfCollector?.isRunning == true),
+            permissionGranted = RfCellularCollector.hasPermissions(this),
+            statusOverride = rfStatusOverride,
+            linkEvidence = link
+        )
+    }
+
     private fun shareTextReport() {
         val sysIp = uiState.egress.system?.let { "${it.ip}（${it.location?.summary() ?: "位置未知"}）" } ?: "未探测"
         val proxyIp = uiState.egress.proxy?.let { "${it.ip}（${it.location?.summary() ?: "位置未知"}）" } ?: "未探测"
-        val report = "Wiesler Android 0.1.1\n${Date()}\n${diagnosticText()}\n系统公网出口：$sysIp\n代理公网出口：$proxyIp\nICMP 目标：$lossTarget\n${lossWindow.text()}\n$lossStatus\nHTTPS：$probeResult\n系统接口累计 RX=${formatBytes(lastRx.toDouble())} TX=${formatBytes(lastTx.toDouble())}\nVPN 下系统接口可能重复计量。\n\n最近请求日志\n${requestLogs.joinToString("\n") { it.text() }}"
+        val rfSummary = evaluateRfSnapshot().toSummaryText()
+        val report = "Wiesler Android 0.1.1\n${Date()}\n${diagnosticText()}\n系统公网出口：$sysIp\n代理公网出口：$proxyIp\nICMP 目标：$lossTarget\n${lossWindow.text()}\n$lossStatus\nHTTPS：$probeResult\n系统接口累计 RX=${formatBytes(lastRx.toDouble())} TX=${formatBytes(lastTx.toDouble())}\nVPN 下系统接口可能重复计量。\n\n$rfSummary\n\n最近请求日志\n${requestLogs.joinToString("\n") { it.text() }}"
         startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_TEXT, report)
@@ -1212,6 +1354,7 @@ class MainActivity : ComponentActivity() {
                 received = lossWindow.received,
                 errors = lossWindow.errors
             ),
+            rfDiagnostics = evaluateRfSnapshot(),
             usageAllowed = cachedUsageAllowed,
             systemNetworkSnapshot = cachedDiagnosticText,
             httpsProbeBusy = probeBusy,

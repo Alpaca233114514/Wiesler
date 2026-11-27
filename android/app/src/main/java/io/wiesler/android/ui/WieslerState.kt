@@ -10,6 +10,7 @@ import io.wiesler.android.PrivacyReport
 import io.wiesler.android.PrivacySummary
 import io.wiesler.android.Rate
 import io.wiesler.android.RequestLog
+import io.wiesler.android.RfDiagnosticsSnapshot
 import io.wiesler.android.StoredSession
 import io.wiesler.android.StudioFlow
 import io.wiesler.android.StudioFrame
@@ -116,6 +117,8 @@ data class WieslerUiState(
     val forwardObservedTx: Double = 0.0,
     // ICMP
     val packetLoss: PacketLossUiState = PacketLossUiState(),
+    // Cellular RF monitoring & cross-layer attribution
+    val rfDiagnostics: RfDiagnosticsSnapshot = RfDiagnosticsSnapshot(),
     // Apps usage
     val usageAllowed: Boolean = false,
     val usageBusy: Boolean = false,
