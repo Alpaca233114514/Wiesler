@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:">
+  <meta name="color-scheme" content="light dark">
+  <script src="theme-init.js"></script>
   <title>Wiesler Desktop</title>
   <link rel="icon" type="image/svg+xml" href="logo.svg">
   <link rel="stylesheet" href="studio.css">
@@ -22,7 +24,15 @@
 
   <main>
     <nav class="workspace-nav" aria-label="工作台视图">
-      <button id="view-graph" type="button" aria-label="连接图谱" title="连接图谱" class="active" aria-pressed="true">
+      <button id="view-home" type="button" aria-label="网络质量首页" title="网络质量" class="active" aria-pressed="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4.5 13.5a7.5 7.5 0 1 1 15 0"/>
+          <path d="M12 13.5l4.2-4.2"/>
+          <circle cx="12" cy="13.5" r="1.4"/>
+          <path d="M7.2 18.2h9.6"/>
+        </svg>
+      </button>
+      <button id="view-graph" type="button" aria-label="连接图谱" title="连接图谱" aria-pressed="false">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <rect x="3" y="9.25" width="5.5" height="5.5" rx="1.6"/>
           <rect x="15.5" y="4" width="5.5" height="5.5" rx="1.6"/>
@@ -90,7 +100,78 @@
         <button id="egress-refresh" type="button" class="btn-subtle egress-refresh-btn">刷新出口</button>
       </section>
 
-      <div class="workbench" id="graph-view">
+      <section id="home-view" class="home-view" aria-label="综合网络质量首页">
+        <div class="home-header">
+          <h1 class="home-title">网络质量</h1>
+          <span id="home-link-status" class="home-link-pill" data-tone="neutral" role="status">读取中</span>
+        </div>
+
+        <section class="panel home-hero" aria-label="综合评分概览">
+          <div class="home-hero-main">
+            <div class="home-gauge" aria-label="网络质量评分仪表">
+              <svg viewBox="0 0 120 120" class="home-gauge-svg" role="img" aria-label="综合网络评分">
+                <circle cx="60" cy="60" r="48" class="home-gauge-track"/>
+                <circle id="home-gauge-arc" cx="60" cy="60" r="48" class="home-gauge-arc" stroke-dasharray="301.59" stroke-dashoffset="301.59"/>
+              </svg>
+              <div class="home-gauge-center">
+                <strong id="home-score">—</strong>
+                <span id="home-grade" class="home-grade-label">待体检</span>
+              </div>
+            </div>
+
+            <div class="home-hero-body">
+              <h2 id="home-headline">等待采集网络质量</h2>
+              <p id="home-summary" class="home-summary">点击一键体检或开启持续监测，复用本地多维探针计算环境评分。</p>
+              <div class="home-live-rates">
+                <span id="home-rate-rx" class="rate-rx">↓ —</span>
+                <span id="home-rate-tx" class="rate-tx">↑ —</span>
+              </div>
+              <p id="home-advice" class="home-advice"></p>
+            </div>
+          </div>
+
+          <div class="home-actions">
+            <button id="home-check-btn" type="button" class="btn-primary">一键体检</button>
+            <button id="home-monitor-toggle" type="button" class="btn-subtle">持续监测</button>
+            <div class="home-target-choice" role="group" aria-label="快捷探测目标">
+              <button id="home-target-223" type="button" data-ip="223.5.5.5" aria-pressed="false">阿里 DNS</button>
+              <button id="home-target-111" type="button" data-ip="1.1.1.1" aria-pressed="true">Cloudflare</button>
+              <button id="home-target-888" type="button" data-ip="8.8.8.8" aria-pressed="false">Google</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel home-flat-panel" aria-labelledby="home-dim-title">
+          <div class="home-section-head">
+            <h3 id="home-dim-title">分项评分</h3>
+            <span id="home-dim-coverage" class="panel-sub">0/3 维已测</span>
+          </div>
+          <div id="home-dimensions" class="home-dim-grid"></div>
+        </section>
+
+        <section class="panel home-flat-panel" aria-labelledby="home-trend-title">
+          <div class="home-section-head">
+            <h3 id="home-trend-title">评分与延迟趋势</h3>
+            <span id="home-trend-meta" class="panel-sub">等待连续采样</span>
+          </div>
+          <div class="home-trend-wrap">
+            <svg class="home-trend-chart" viewBox="0 0 800 120" preserveAspectRatio="none" role="img" aria-label="网络质量评分趋势">
+              <path id="home-trend-area" class="home-trend-area"/>
+              <path id="home-trend-line" class="home-trend-line"/>
+            </svg>
+          </div>
+        </section>
+
+        <section class="panel home-flat-panel" aria-labelledby="home-scenario-title">
+          <div class="home-section-head">
+            <h3 id="home-scenario-title">场景适配</h3>
+            <span id="home-perf-badge" class="panel-sub">均衡模式</span>
+          </div>
+          <div id="home-scenarios" class="home-scenario-grid"></div>
+        </section>
+      </section>
+
+      <div class="workbench" id="graph-view" hidden>
         <section class="graph-panel">
           <div class="graph-toolbar">
             <h1 class="view-title">连接图谱 <span id="flow-count">0</span></h1>
@@ -520,33 +601,110 @@
         <pre id="report" class="report"></pre>
       </section>
 
-      <section id="settings" class="panel" hidden>
-        <div class="panel-head">
+      <section id="settings" class="panel settings-shell" hidden>
+        <div class="panel-head settings-shell-head">
           <div>
-            <h3>代理控制器与偏好设置</h3>
-            <span class="panel-sub">自动发现本机 Mihomo External Controller</span>
+            <h3>设置</h3>
+            <span class="panel-sub">按类别管理代理控制器、采样性能档位、外观与本地观测范围</span>
           </div>
         </div>
-        <div id="controller-tools" class="settings-content">
-          <div class="controller-actions">
-            <button id="discover" type="button" class="btn-subtle">重新扫描</button>
-            <select id="controller-choice" aria-label="发现的本机控制器" hidden></select>
-            <button id="connect-discovered" type="button" class="btn-primary" hidden>连接所选</button>
-            <span id="controller-address" class="mono-pill"></span>
-          </div>
-          <details class="controller-advanced">
-            <summary>手动指定控制器地址</summary>
-            <form id="controller-form">
-              <label for="controller">HTTP 地址</label>
-              <input id="controller" placeholder="http://127.0.0.1:9090" spellcheck="false" required>
-              <button type="submit" class="btn-primary">连接 / 重连</button>
-            </form>
-          </details>
+
+        <div class="settings-tablist" role="tablist" aria-label="设置分类">
+          <button type="button" id="settings-tab-controller" data-settings-tab="controller" role="tab" aria-selected="true" tabindex="0">
+            <span>控制器</span>
+            <span id="settings-summary-controller" class="settings-tab-meta">未连接</span>
+          </button>
+          <button type="button" id="settings-tab-monitoring" data-settings-tab="monitoring" role="tab" aria-selected="false" tabindex="-1">
+            <span>监测与核查</span>
+            <span id="settings-summary-perf" class="settings-tab-meta">均衡模式</span>
+          </button>
+          <button type="button" id="settings-tab-appearance" data-settings-tab="appearance" role="tab" aria-selected="false" tabindex="-1">
+            <span>外观</span>
+            <span id="settings-summary-theme" class="settings-tab-meta">跟随系统</span>
+          </button>
+          <button type="button" id="settings-tab-about" data-settings-tab="about" role="tab" aria-selected="false" tabindex="-1">
+            <span>关于</span>
+          </button>
         </div>
-        <label class="animation-setting">
-          <input id="flow-animation" type="checkbox" checked>
-          <span>在连接图谱上显示实时上传 / 下载脉冲粒子</span>
-        </label>
+
+        <div id="settings-panel-controller" class="settings-tabpanel" role="tabpanel" aria-labelledby="settings-tab-controller">
+          <div class="settings-section-inner">
+            <div class="settings-row-head">
+              <strong>Mihomo External Controller</strong>
+              <span class="panel-sub">自动发现本机环回监听或手动指定只读地址</span>
+            </div>
+            <div id="controller-tools" class="settings-content">
+              <div class="controller-actions">
+                <button id="discover" type="button" class="btn-subtle">重新扫描</button>
+                <select id="controller-choice" aria-label="发现的本机控制器" hidden></select>
+                <button id="connect-discovered" type="button" class="btn-primary" hidden>连接所选</button>
+                <span id="controller-address" class="mono-pill"></span>
+              </div>
+              <details class="controller-advanced">
+                <summary>手动指定控制器地址</summary>
+                <form id="controller-form">
+                  <label for="controller">HTTP 地址</label>
+                  <input id="controller" placeholder="http://127.0.0.1:9090" spellcheck="false" required>
+                  <button type="submit" class="btn-primary">连接 / 重连</button>
+                </form>
+              </details>
+            </div>
+          </div>
+        </div>
+
+        <div id="settings-panel-monitoring" class="settings-tabpanel" role="tabpanel" aria-labelledby="settings-tab-monitoring" hidden>
+          <div class="settings-section-inner">
+            <div class="settings-row-head">
+              <strong>监测性能与资源档位</strong>
+              <span id="perf-mode-desc" class="panel-sub">1s 活跃采样 · RF 异常自动提速 · 兼顾响应与占用（推荐）</span>
+            </div>
+            <div id="perf-mode-group" class="choice-strip" role="group" aria-label="监测性能档位">
+              <button id="perf-mode-eco" type="button" data-perf="eco" aria-pressed="false">极致省电</button>
+              <button id="perf-mode-balanced" type="button" data-perf="balanced" aria-pressed="true">均衡模式</button>
+              <button id="perf-mode-high" type="button" data-perf="high" aria-pressed="false">高频排障</button>
+            </div>
+
+            <div class="settings-hairline"></div>
+
+            <label class="animation-setting">
+              <input id="flow-animation" type="checkbox" checked>
+              <span>在连接图谱上显示实时上传 / 下载脉冲粒子</span>
+            </label>
+            <label class="animation-setting">
+              <input id="settings-expect-proxy" type="checkbox">
+              <span>隐私核查默认预期所有连接经代理转发</span>
+            </label>
+          </div>
+        </div>
+
+        <div id="settings-panel-appearance" class="settings-tabpanel" role="tabpanel" aria-labelledby="settings-tab-appearance" hidden>
+          <div class="settings-section-inner">
+            <div class="settings-row-head">
+              <strong>主题外观</strong>
+              <span id="theme-mode-desc" class="panel-sub">默认跟随系统明暗方案，支持手动固定深色或浅色</span>
+            </div>
+            <div id="theme-mode-group" class="choice-strip" role="group" aria-label="界面主题">
+              <button id="theme-mode-system" type="button" data-theme="system" aria-pressed="true">跟随系统</button>
+              <button id="theme-mode-light" type="button" data-theme="light" aria-pressed="false">浅色</button>
+              <button id="theme-mode-dark" type="button" data-theme="dark" aria-pressed="false">深色</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="settings-panel-about" class="settings-tabpanel" role="tabpanel" aria-labelledby="settings-tab-about" hidden>
+          <div class="settings-section-inner">
+            <div class="about-brand">
+              <span class="mark about-mark" aria-hidden="true">
+                <svg viewBox="0 0 256 256" aria-hidden="true"><path fill="currentColor" d="M119 28L184 28A44 44 0 0 1 228 72L228 137A13 13 0 0 1 215 150L187 150A13 13 0 0 1 174 137L174 92A10 10 0 0 0 164 82L119 82A13 13 0 0 1 106 69L106 41A13 13 0 0 1 119 28ZM137 228L72 228A44 44 0 0 1 28 184L28 119A13 13 0 0 1 41 106L69 106A13 13 0 0 1 82 119L82 164A10 10 0 0 0 92 174L137 174A13 13 0 0 1 150 187L150 215A13 13 0 0 1 137 228ZM57 30A27 27 0 1 1 57 84A27 27 0 1 1 57 30ZM199 172A27 27 0 1 1 199 226A27 27 0 1 1 199 172Z"/></svg>
+              </span>
+              <div>
+                <strong>Wiesler Desktop</strong>
+                <span class="panel-sub">本地只读网络与代理可观测工作台 · v0.1.1</span>
+              </div>
+            </div>
+            <p class="about-note">本程序仅在本地读取系统连接表、Mihomo 只读接口、ICMP/HTTPS/DNS 探针及 Wi-Fi/ADB 射频遥测，不上传任何隐私数据，不改写代理路由规则。</p>
+          </div>
+        </div>
       </section>
     </div>
   </main>
@@ -555,6 +713,7 @@
   <script src="site-dictionary.js"></script>
   <script src="studio-model.js"></script>
   <script src="privacy-model.js"></script>
+  <script src="quality-model.js"></script>
   <script src="monitor-tools.js"></script>
   <script src="studio.js"></script>
 </body>

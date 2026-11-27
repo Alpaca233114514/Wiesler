@@ -3,11 +3,17 @@
   const $ = id => document.getElementById(id);
   const invoke = window.__TAURI__?.core?.invoke;
   const requestLogs = [];
+  const changeListeners = new Set();
+  function notifyChange() {
+    for (const fn of changeListeners) {
+      try { fn(); } catch (_) {}
+    }
+  }
   function appendRequestLog(code, error) {
     const status = Number.isInteger(code) && code >= 100 && code <= 599 ? code : null;
     const failed = Boolean(error) || status >= 400;
     const result = failed ? '失败' : status >= 200 && status < 300 ? '成功' : status >= 300 ? '重定向' : '未知';
-    requestLogs.unshift({time:new Date().toLocaleTimeString(), status, result, error});
+    requestLogs.unshift({time:new Date().toLocaleTimeString(), status, result, failed, error});
     requestLogs.length = Math.min(requestLogs.length, 100);
     $('request-log-rows').replaceChildren();
     for (const entry of requestLogs) {
@@ -19,6 +25,7 @@
       });
       $('request-log-rows').append(tr);
     }
+    notifyChange();
   }
   const DB_DIRS_KEY = 'wiesler.diagnostics.dirs';
   let dbGeneration = 0, loadedDatabase = '', dbDiscoveredOnce = false, dbDiscoverBusy = false, discoveredDatabases = [];
@@ -210,19 +217,50 @@
     finally{if(token===dbGeneration)$('diagnose').disabled=false;}
   };
   let lossRunning = false, lossGeneration = 0, lossTimer, lossBusy = false, lossSamples = [];
-  function renderLoss() {
+  let activePerfMode = window.QualityModel?.resolvePerformanceMode?.('balanced') || {
+    icmpIntervalMs: 1000,
+    rfSteadyPollMs: 3000,
+    rfEscalatedPollMs: 3000
+  };
+  let lastRfReport = null;
+
+  function computeLossStats() {
     const valid = lossSamples.filter(s => s.outcome === 'reply' || s.outcome === 'lost');
     const replies = valid.filter(s => s.outcome === 'reply');
     const lost = valid.length - replies.length;
     const timings = replies.map(s => s.rtt_ms).filter(n => Number.isFinite(n) && n >= 0);
-    $('loss-rate').textContent = valid.length ? `${(100 * lost / valid.length).toFixed(1)}%` : '—';
-    $('loss-counts').textContent = `发送 ${valid.length} · 收到 ${replies.length} · 未回包 ${lost} · 探测错误 ${lossSamples.length - valid.length}`;
-    $('loss-rtt').textContent = `平均延迟 ${timings.length ? (timings.reduce((a,b)=>a+b,0)/timings.length).toFixed(1) + ' ms' : '—'}`;
+    return {
+      running: lossRunning,
+      target: ($('loss-target')?.value || '1.1.1.1').trim() || '1.1.1.1',
+      sent: valid.length,
+      received: replies.length,
+      lost,
+      errors: lossSamples.length - valid.length,
+      lossPercent: valid.length ? (100 * lost / valid.length) : null,
+      avgRttMs: timings.length ? (timings.reduce((a, b) => a + b, 0) / timings.length) : null,
+      samples: lossSamples.slice()
+    };
+  }
+
+  function renderLoss() {
+    const stats = computeLossStats();
+    $('loss-rate').textContent = stats.sent ? `${stats.lossPercent.toFixed(1)}%` : '—';
+    $('loss-counts').textContent = `发送 ${stats.sent} · 收到 ${stats.received} · 未回包 ${stats.lost} · 探测错误 ${stats.errors}`;
+    $('loss-rtt').textContent = `平均延迟 ${stats.avgRttMs != null ? stats.avgRttMs.toFixed(1) + ' ms' : '—'}`;
+    notifyChange();
+  }
+  function isValidUnicastIpv4(targetIp) {
+    const parts = targetIp.split('.');
+    return parts.length === 4
+      && !parts.some(p => !/^(0|[1-9]\d{0,2})$/.test(p) || Number(p) > 255)
+      && Number(parts[0]) < 224
+      && targetIp !== '0.0.0.0';
   }
   function stopLoss(message = '已停止 · 保留最后结果') {
     lossRunning = false; lossGeneration++; clearTimeout(lossTimer);
     $('loss-target').disabled = false; $('loss-start').disabled = false; $('loss-stop').disabled = true;
     $('loss-status').textContent = message;
+    notifyChange();
   }
   async function pollLoss(token, targetIp) {
     if (!lossRunning || token !== lossGeneration) return;
@@ -236,20 +274,57 @@
     if (!lossRunning || token !== lossGeneration) return;
     lossSamples.push(result); lossSamples = lossSamples.slice(-60); renderLoss();
     $('loss-status').textContent = `${targetIp} · ${new Date().toLocaleTimeString()} · ${result.message}`;
-    lossTimer = setTimeout(()=>pollLoss(token,targetIp),1000);
+    lossTimer = setTimeout(()=>pollLoss(token,targetIp), activePerfMode.icmpIntervalMs || 1000);
   }
-  $('loss-form').onsubmit = e => {
-    e.preventDefault();
-    if (lossRunning) return;
-    if (!invoke) { $('loss-status').textContent = '请在 Wiesler 桌面程序中启动监控'; return; }
-    const targetIp = $('loss-target').value.trim(), parts = targetIp.split('.');
-    if (parts.length !== 4 || parts.some(p=>! /^(0|[1-9]\d{0,2})$/.test(p) || Number(p)>255) || Number(parts[0])>=224 || targetIp==='0.0.0.0') {
-      $('loss-status').textContent = '请输入单播 IPv4 地址'; return;
+  function startLoss(targetOverride) {
+    if (lossRunning) return true;
+    if (!invoke) { $('loss-status').textContent = '请在 Wiesler 桌面程序中启动监控'; return false; }
+    if (typeof targetOverride === 'string' && targetOverride.trim() && $('loss-target')) {
+      $('loss-target').value = targetOverride.trim();
+    }
+    const targetIp = $('loss-target').value.trim();
+    if (!isValidUnicastIpv4(targetIp)) {
+      $('loss-status').textContent = '请输入单播 IPv4 地址'; return false;
     }
     lossGeneration++; lossRunning = true; lossSamples = []; renderLoss();
     $('loss-target').disabled = true; $('loss-start').disabled = true; $('loss-stop').disabled = false;
     $('loss-status').textContent = `${targetIp} · 正在探测…`;
     pollLoss(lossGeneration,targetIp);
+    return true;
+  }
+  function setLossTarget(targetIp) {
+    const clean = typeof targetIp === 'string' ? targetIp.trim() : '';
+    if (!clean || !isValidUnicastIpv4(clean)) return false;
+    const wasRunning = lossRunning;
+    if (wasRunning) stopLoss('目标已切换，重新探测…');
+    if ($('loss-target')) $('loss-target').value = clean;
+    lossSamples = [];
+    renderLoss();
+    if (wasRunning) startLoss(clean);
+    return true;
+  }
+  async function runSinglePingBurst(targetOverride, count = 3) {
+    if (!invoke) return computeLossStats();
+    const targetIp = (typeof targetOverride === 'string' && targetOverride.trim() ? targetOverride.trim() : $('loss-target')?.value?.trim()) || '1.1.1.1';
+    if (!isValidUnicastIpv4(targetIp)) return computeLossStats();
+    if ($('loss-target') && !lossRunning) $('loss-target').value = targetIp;
+    const burstToken = lossGeneration;
+    for (let i = 0; i < count; i++) {
+      if (lossRunning || burstToken !== lossGeneration) break;
+      let result;
+      try { result = await invoke('ping', { targetIp }); }
+      catch (error) { result = { outcome: 'error', rtt_ms: null, message: error?.message || String(error) }; }
+      if (lossRunning || burstToken !== lossGeneration) break;
+      lossSamples.push(result);
+      lossSamples = lossSamples.slice(-60);
+      renderLoss();
+      $('loss-status').textContent = `${targetIp} · ${new Date().toLocaleTimeString()} · ${result.message}`;
+    }
+    return computeLossStats();
+  }
+  $('loss-form').onsubmit = e => {
+    e.preventDefault();
+    startLoss();
   };
   $('loss-stop').onclick = () => stopLoss();
   let rfRunning = false, rfGeneration = 0, rfTimer, rfBusy = false;
@@ -384,7 +459,9 @@
     try {
       const report = await invoke('rf_probe', { link: currentLinkContext() });
       if (!rfRunning || token !== rfGeneration) return;
+      lastRfReport = report;
       renderRfReport(report);
+      notifyChange();
     } catch (error) {
       if (rfRunning && token === rfGeneration && $('rf-adb-sub')) {
         $('rf-adb-sub').textContent = `监测失败：${error?.message || String(error)}`;
@@ -392,8 +469,28 @@
     } finally {
       rfBusy = false;
       if (rfRunning && token === rfGeneration) {
-        rfTimer = setTimeout(() => pollRf(token), 3000);
+        const escalated = lastRfReport?.severity === 'severe' || lastRfReport?.severity === 'interference';
+        const delay = escalated
+          ? (activePerfMode.rfEscalatedPollMs || 3000)
+          : (activePerfMode.rfSteadyPollMs || 6000);
+        rfTimer = setTimeout(() => pollRf(token), delay);
       }
+    }
+  }
+
+  async function probeRfOnce() {
+    if (!invoke || rfBusy) return lastRfReport;
+    rfBusy = true;
+    try {
+      const report = await invoke('rf_probe', { link: currentLinkContext() });
+      lastRfReport = report;
+      renderRfReport(report);
+      notifyChange();
+      return report;
+    } catch (_) {
+      return lastRfReport;
+    } finally {
+      rfBusy = false;
     }
   }
 
@@ -425,6 +522,8 @@
       if ($('rf-events-count')) $('rf-events-count').textContent = '0';
       if ($('rf-score-value')) $('rf-score-value').textContent = '—';
       if ($('rf-adb-value')) $('rf-adb-value').textContent = '已清空';
+      lastRfReport = null;
+      notifyChange();
     };
   }
 
@@ -440,7 +539,35 @@
       healthy: Boolean(next?.healthy),
       error: next?.error || null
     };
+    notifyChange();
   }
 
-  window.MonitorTools = {appendRequestLog, discoverDatabases, setControllerHealth};
+  function setPerformanceMode(mode) {
+    if (!mode) return;
+    activePerfMode = {
+      icmpIntervalMs: mode.icmpIntervalMs || 1000,
+      rfSteadyPollMs: mode.rfSteadyPollMs || 6000,
+      rfEscalatedPollMs: mode.rfEscalatedPollMs || 3000
+    };
+  }
+
+  function onChange(listener) {
+    if (typeof listener === 'function') changeListeners.add(listener);
+  }
+
+  window.MonitorTools = {
+    appendRequestLog,
+    getRequestLogs: () => requestLogs.slice(),
+    discoverDatabases,
+    setControllerHealth,
+    getLossStats: computeLossStats,
+    setLossTarget,
+    startLoss,
+    stopLoss,
+    runSinglePingBurst,
+    getRfReport: () => lastRfReport,
+    probeRfOnce,
+    setPerformanceMode,
+    onChange
+  };
 })();

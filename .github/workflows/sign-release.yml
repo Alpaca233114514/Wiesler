@@ -1,0 +1,484 @@
+name: Sign and Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.1; required when publish_release is true)'
+        required: false
+        default: ''
+        type: string
+      sign_windows:
+        description: 'Build and Authenticode-sign Windows x64 desktop & CLI package'
+        required: false
+        default: true
+        type: boolean
+      sign_android:
+        description: 'Build and sign Android release APK'
+        required: false
+        default: true
+        type: boolean
+      allow_self_signed_windows:
+        description: 'Allow Windows self-signed certificate (0x800B0109) when Subject == Issuer'
+        required: false
+        default: true
+        type: boolean
+      publish_release:
+        description: 'Upload signed assets to GitHub Release (creates or updates tag release)'
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: 'Mark GitHub Release as pre-release (false promotes to Latest)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sign-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate version and release inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      sign_windows: ${{ inputs.sign_windows }}
+      sign_android: ${{ inputs.sign_android }}
+      publish_release: ${{ inputs.publish_release }}
+      prerelease: ${{ inputs.prerelease }}
+      source_commit: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate package versions and release tag
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          SIGN_WINDOWS: ${{ inputs.sign_windows }}
+          SIGN_ANDROID: ${{ inputs.sign_android }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        run: |
+          set -euo pipefail
+          if [ "${SIGN_WINDOWS}" != "true" ] && [ "${SIGN_ANDROID}" != "true" ]; then
+            echo "::error::Enable at least one of sign_windows or sign_android."
+            exit 1
+          fi
+
+          VERSION=$(python3 scripts/check-release-version.py | awk '{print $NF}')
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Unexpected version string from check-release-version.py: ${VERSION}"
+            exit 1
+          fi
+          echo "Resolved package version: ${VERSION}"
+
+          TAG="${INPUT_TAG#"${INPUT_TAG%%[![:space:]]*}"}"
+          TAG="${TAG%"${TAG##*[![:space:]]}"}"
+
+          if [ "${PUBLISH_RELEASE}" = "true" ] && [ -z "${TAG}" ]; then
+            echo "::error::tag is required when publish_release is true."
+            exit 1
+          fi
+
+          if [ -n "${TAG}" ]; then
+            if ! [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
+              echo "::error::Invalid release tag format: ${TAG}"
+              exit 1
+            fi
+            TAG_BASE="${TAG#v}"
+            TAG_BASE="${TAG_BASE%%[-+]*}"
+            if [ "${TAG_BASE}" != "${VERSION}" ]; then
+              echo "::error::Tag ${TAG} does not match Cargo/Android package version ${VERSION}."
+              exit 1
+            fi
+            # 若同名 tag 已存在，强制校验其指向当前提交，禁止将不同源码提交的签名产物混挂到旧 tag。
+            # If the tag already exists, require it to point to GITHUB_SHA to prevent commit mismatch.
+            if git rev-parse -q --verify "refs/tags/${TAG}^{commit}" >/dev/null; then
+              TAG_COMMIT=$(git rev-parse "refs/tags/${TAG}^{commit}")
+              if [ "${TAG_COMMIT}" != "${GITHUB_SHA}" ]; then
+                echo "::error::Existing tag ${TAG} points to ${TAG_COMMIT}, not current commit ${GITHUB_SHA}. Re-run workflow on ref ${TAG} or bump version."
+                exit 1
+              fi
+            fi
+          fi
+
+          {
+            echo "version=${VERSION}"
+            echo "release_tag=${TAG}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build-windows:
+    name: Build unsigned Windows package
+    needs: prepare
+    if: needs.prepare.outputs.sign_windows == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install locked Rust toolchain
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          rustup default 1.97.1
+
+      - name: Check package versions
+        run: python scripts/check-release-version.py
+
+      - name: Test and build unsigned Windows package
+        run: ./scripts/build-windows.ps1
+
+      - name: Upload unsigned Windows artifact for isolated signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-unsigned-for-signing
+          path: dist/windows-x64/
+          if-no-files-found: error
+          retention-days: 1
+
+  build-android:
+    name: Build unsigned Android release APK
+    needs: prepare
+    if: needs.prepare.outputs.sign_android == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android SDK components
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0"'
+
+      - name: Test, lint and build unsigned release APK
+        working-directory: android
+        run: java -classpath gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain --no-daemon :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
+
+      - name: Upload unsigned Android APK for isolated signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-unsigned-for-signing
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  # 签名阶段与构建阶段拆分，仅受保护环境 release-signing 持有私钥，构建依赖无法接触密钥。
+  # Signing jobs are isolated from build jobs under the protected release-signing environment.
+  sign-windows:
+    name: Sign and verify Windows package
+    needs: [prepare, build-windows]
+    if: needs.prepare.outputs.sign_windows == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    environment: release-signing
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download unsigned Windows package
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x64-unsigned-for-signing
+          path: unsigned-windows
+
+      - name: Sign and verify Windows executables
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+          BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ALLOW_SELF_SIGNED: ${{ inputs.allow_self_signed_windows }}
+        run: |
+          $allowSelf = ($env:ALLOW_SELF_SIGNED -eq 'true')
+          ./scripts/sign-windows-ci.ps1 `
+            -WindowsPackage 'unsigned-windows' `
+            -OutputDirectory 'signed-windows' `
+            -Version $env:VERSION `
+            -SourceCommit $env:SOURCE_COMMIT `
+            -BuildUrl $env:BUILD_URL `
+            -AllowSelfSigned:$allowSelf
+
+      - name: Upload signed Windows bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-windows-output
+          path: signed-windows/
+          if-no-files-found: error
+          retention-days: 14
+
+  sign-android:
+    name: Sign and verify Android APK
+    needs: [prepare, build-android]
+    if: needs.prepare.outputs.sign_android == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release-signing
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android build-tools
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0"'
+
+      - name: Download unsigned Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: android-release-unsigned-for-signing
+          path: unsigned-android
+
+      - name: Align, sign and verify release APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_KEYSTORE_BASE64}" ] || [ -z "${ANDROID_KEYSTORE_PASSWORD}" ]; then
+            echo "::error::Missing ANDROID_KEYSTORE_BASE64 or ANDROID_KEYSTORE_PASSWORD in release-signing environment secrets."
+            exit 1
+          fi
+          export ANDROID_KEY_ALIAS="${ANDROID_KEY_ALIAS:-wiesler-release}"
+          export ANDROID_KEY_PASSWORD="${ANDROID_KEY_PASSWORD:-${ANDROID_KEYSTORE_PASSWORD}}"
+
+          BUILD_TOOLS="${ANDROID_HOME}/build-tools/35.0.0"
+          KEYSTORE_PATH="${RUNNER_TEMP}/wiesler-release.keystore"
+          cleanup() {
+            rm -f "${KEYSTORE_PATH}"
+          }
+          trap cleanup EXIT
+
+          umask 077
+          printf '%s' "${ANDROID_KEYSTORE_BASE64}" | tr -d '[:space:]' | base64 --decode > "${KEYSTORE_PATH}"
+
+          mkdir -p signed-android
+          ALIGNED_APK="${RUNNER_TEMP}/android-aligned-unsigned.apk"
+          SIGNED_APK="signed-android/Wiesler-${VERSION}-android.apk"
+          CERT_OUT="signed-android/Wiesler-android-signing.cer"
+
+          "${BUILD_TOOLS}/zipalign" -p -f 4 unsigned-android/app-release-unsigned.apk "${ALIGNED_APK}"
+
+          # 使用 env: 传递密码，避免口令出现在进程命令行参数或日志中。
+          # Pass keystore credentials via env: so passwords never appear in CLI arguments.
+          "${BUILD_TOOLS}/apksigner" sign \
+            --ks "${KEYSTORE_PATH}" \
+            --ks-key-alias "${ANDROID_KEY_ALIAS}" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
+            --out "${SIGNED_APK}" \
+            "${ALIGNED_APK}"
+
+          VERIFICATION=$("${BUILD_TOOLS}/apksigner" verify --verbose --print-certs "${SIGNED_APK}")
+          "${BUILD_TOOLS}/zipalign" -c -p 4 "${SIGNED_APK}"
+
+          keytool -exportcert \
+            -keystore "${KEYSTORE_PATH}" \
+            -alias "${ANDROID_KEY_ALIAS}" \
+            -storepass:env ANDROID_KEYSTORE_PASSWORD \
+            -file "${CERT_OUT}"
+
+          FINGERPRINT=$(openssl x509 -inform DER -in "${CERT_OUT}" -noout -fingerprint -sha256 | sed 's/^.*=//; s/://g' | tr '[:upper:]' '[:lower:]')
+          if ! printf '%s' "${VERIFICATION}" | tr '[:upper:]' '[:lower:]' | grep -Fq "${FINGERPRINT}"; then
+            echo "::error::Signed APK certificate SHA-256 fingerprint does not match exported certificate."
+            exit 1
+          fi
+
+          VERIFICATION="${VERIFICATION}" FINGERPRINT="${FINGERPRINT}" APK_FILE="$(basename "${SIGNED_APK}")" \
+            python3 - <<'PY'
+          import json, os
+          report = {
+              "file": os.environ["APK_FILE"],
+              "certificateSha256": os.environ["FINGERPRINT"],
+              "verification": os.environ["VERIFICATION"].strip(),
+          }
+          with open("signed-android/android-signature-report.json", "w", encoding="utf-8") as fh:
+              json.dump(report, fh, indent=2, ensure_ascii=False)
+          PY
+
+          rm -f "${ALIGNED_APK}"
+
+      - name: Ensure temporary keystore is removed
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/wiesler-release.keystore" "${RUNNER_TEMP}/android-aligned-unsigned.apk"
+
+      - name: Upload signed Android bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-android-output
+          path: signed-android/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-signed-release:
+    name: Assemble report, attest and publish release
+    needs: [prepare, sign-windows, sign-android]
+    if: always() && needs.prepare.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-signing
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    steps:
+      - name: Download signed Windows output
+        if: needs.prepare.outputs.sign_windows == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-windows-output
+          path: staging/windows
+
+      - name: Download signed Android output
+        if: needs.prepare.outputs.sign_android == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-android-output
+          path: staging/android
+
+      - name: Merge signature report and compute SHA-256 checksums
+        id: bundle
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+          BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+
+          if [ -d staging/windows ]; then
+            cp staging/windows/Wiesler-*-windows-x64.zip staging/windows/Wiesler-windows-signing.cer release-assets/
+          fi
+          if [ -d staging/android ]; then
+            cp staging/android/Wiesler-*-android.apk staging/android/Wiesler-android-signing.cer release-assets/
+          fi
+
+          python3 - <<'PY'
+          import json, os, pathlib
+
+          report = {
+              "version": os.environ["VERSION"],
+              "sourceCommit": os.environ["SOURCE_COMMIT"],
+              "buildUrl": os.environ["BUILD_URL"],
+              "windows": [],
+              "android": None,
+          }
+          win_report = pathlib.Path("staging/windows/windows-signature-report.json")
+          if win_report.is_file():
+              report["windows"] = json.loads(win_report.read_text(encoding="utf-8")).get("windows", [])
+
+          android_report = pathlib.Path("staging/android/android-signature-report.json")
+          if android_report.is_file():
+              report["android"] = json.loads(android_report.read_text(encoding="utf-8"))
+
+          pathlib.Path("release-assets/signature-report.json").write_text(
+              json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          # 先写到临时文件再移入，避免 SHA256SUMS.txt 将自身纳入哈希列表。
+          # Write checksums to RUNNER_TEMP first so SHA256SUMS.txt is never hashed into itself.
+          (
+            cd release-assets
+            find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | xargs -d '\n' sha256sum > "${RUNNER_TEMP}/SHA256SUMS.txt"
+          )
+          mv "${RUNNER_TEMP}/SHA256SUMS.txt" release-assets/SHA256SUMS.txt
+          cat release-assets/SHA256SUMS.txt
+
+          SUBJECTS=$(find release-assets -maxdepth 1 -type f \( -name '*.zip' -o -name '*.apk' \) | LC_ALL=C sort)
+          if [ -z "${SUBJECTS}" ]; then
+            echo "::error::No signed ZIP or APK found for provenance attestation."
+            exit 1
+          fi
+          {
+            echo "attest_subjects<<EOF"
+            printf '%s\n' "${SUBJECTS}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Generate Sigstore build provenance attestation
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ steps.bundle.outputs.attest_subjects }}
+
+      - name: Upload signed release bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wiesler-signed-${{ needs.prepare.outputs.version }}
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create or update GitHub Release
+        if: needs.prepare.outputs.publish_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mapfile -t ASSETS < <(find release-assets -maxdepth 1 -type f | sort)
+          if [ "${#ASSETS[@]}" -eq 0 ]; then
+            echo "::error::No signed release assets found."
+            exit 1
+          fi
+
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${ASSETS[@]}" --repo "${GITHUB_REPOSITORY}" --clobber
+            if [ "${IS_PRERELEASE}" = "true" ]; then
+              gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --prerelease=true
+            else
+              gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --prerelease=false --latest
+            fi
+          else
+            NOTES=$(cat <<EOF
+          Signed release packages for Wiesler \`${VERSION}\`.
+
+          - Source commit: \`${SOURCE_COMMIT}\`
+          - Signing workflow run: ${BUILD_URL}
+          - Verification: check \`SHA256SUMS.txt\`, \`signature-report.json\`, and public signing certificates (\`*.cer\`), or run \`gh attestation verify\`.
+          EOF
+          )
+            FLAGS=()
+            if [ "${IS_PRERELEASE}" = "true" ]; then
+              FLAGS=(--prerelease)
+            else
+              FLAGS=(--latest)
+            fi
+            gh release create "${RELEASE_TAG}" "${ASSETS[@]}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${SOURCE_COMMIT}" \
+              --title "Wiesler ${RELEASE_TAG}" \
+              --notes "${NOTES}" \
+              "${FLAGS[@]}"
+          fi

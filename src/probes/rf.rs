@@ -1,10 +1,15 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
+    io::Read,
     path::PathBuf,
     process::{Command, Stdio},
+    sync::Mutex,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+const MAX_CMD_STDOUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CMD_STDERR_BYTES: usize = 256 * 1024;
 
 const WINDOW_COINCIDENCE_MS: u64 = 30_000;
 const WINDOW_PINGPONG_MS: u64 = 60_000;
@@ -1079,12 +1084,15 @@ pub fn parse_radio_protocol_faults(log_output: &str, now_ms: u64) -> Vec<Protoco
         } else if trimmed.contains("DataStallRecoveryStats") && trimmed.contains("Duration:") {
             let dur = extract_key_i32(trimmed, "Duration:");
             let pid = extract_key_i32(trimmed, "Phone id:");
+            let slot_label = pid
+                .and_then(|n| n.checked_add(1))
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into());
             faults.push(ProtocolFault {
                 observed_at_ms: now_ms,
                 kind: "DATA_STALL".into(),
                 detail: format!(
-                    "卡 {} 发生 DataStall 数据停滞（持续 {} ms）",
-                    fmt_opt(pid),
+                    "卡 {slot_label} 发生 DataStall 数据停滞（持续 {} ms）",
                     fmt_opt(dur)
                 ),
                 signature: trimmed.chars().take(120).collect(),
@@ -1205,6 +1213,25 @@ fn extract_after_paren(text: &str, key: &str) -> Option<String> {
 // 外部命令执行（带严格超时保护，防挂起）
 // =========================================================================
 
+fn read_pipe_bounded<R: Read>(mut reader: R, cap: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                // 超过上限后继续排空管道但不追加，防止子进程写满 OS 管道缓冲而死锁。
+                // Keep draining past the cap so the child never deadlocks on a full OS pipe buffer.
+                if out.len() < cap {
+                    let take = n.min(cap - out.len());
+                    out.extend_from_slice(&buf[..take]);
+                }
+            }
+        }
+    }
+    out
+}
+
 fn run_command_with_timeout(
     program: &str,
     args: &[&str],
@@ -1225,25 +1252,65 @@ fn run_command_with_timeout(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("无法启动 {program}: {e}"))?;
+    // 立即并发排空 stdout/stderr，避免 Windows 4 KB 匿名管道写满导致 dumpsys/logcat 死锁超时。
+    // Drain stdout/stderr concurrently so large outputs (>4 KB on Windows) never deadlock try_wait.
+    let stdout_handle = child
+        .stdout
+        .take()
+        .map(|pipe| std::thread::spawn(move || read_pipe_bounded(pipe, MAX_CMD_STDOUT_BYTES)));
+    let stderr_handle = child
+        .stderr
+        .take()
+        .map(|pipe| std::thread::spawn(move || read_pipe_bounded(pipe, MAX_CMD_STDERR_BYTES)));
+
     let start = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                let output = child
-                    .wait_with_output()
-                    .map_err(|e| format!("读取 {program} 输出失败: {e}"))?;
-                return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+            Ok(Some(status)) => {
+                let stdout = stdout_handle
+                    .and_then(|h| h.join().ok())
+                    .unwrap_or_default();
+                let stderr = stderr_handle
+                    .and_then(|h| h.join().ok())
+                    .unwrap_or_default();
+                if !status.success() {
+                    let err_text = String::from_utf8_lossy(&stderr);
+                    let first_line = err_text.lines().next().unwrap_or("").trim();
+                    let code = status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "signal".into());
+                    return if first_line.is_empty() {
+                        Err(format!("{program} 退出异常（code {code}）"))
+                    } else {
+                        Err(format!("{program} 退出异常（code {code}）：{first_line}"))
+                    };
+                }
+                return Ok(String::from_utf8_lossy(&stdout).into_owned());
             }
             Ok(None) => {
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
+                    if let Some(h) = stdout_handle {
+                        let _ = h.join();
+                    }
+                    if let Some(h) = stderr_handle {
+                        let _ = h.join();
+                    }
                     return Err(format!("{program} 执行超时（>{}s）", timeout.as_secs()));
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
             Err(e) => {
                 let _ = child.kill();
+                let _ = child.wait();
+                if let Some(h) = stdout_handle {
+                    let _ = h.join();
+                }
+                if let Some(h) = stderr_handle {
+                    let _ = h.join();
+                }
                 return Err(format!("等待 {program} 失败: {e}"));
             }
         }
@@ -1251,37 +1318,52 @@ fn run_command_with_timeout(
 }
 
 fn find_adb_binary() -> Option<String> {
-    if run_command_with_timeout("adb", &["version"], Duration::from_secs(2)).is_ok() {
-        return Some("adb".to_string());
+    static ADB_CACHE: Mutex<Option<String>> = Mutex::new(None);
+    if let Ok(guard) = ADB_CACHE.lock()
+        && let Some(cached) = guard.as_ref()
+        && (cached == "adb" || PathBuf::from(cached).is_file())
+    {
+        return Some(cached.clone());
     }
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        let base = PathBuf::from(&local);
-        candidates.push(
-            base.join("Android")
-                .join("Sdk")
-                .join("platform-tools")
-                .join("adb.exe"),
-        );
-        let winget_pkgs = base.join("Microsoft").join("WinGet").join("Packages");
-        if let Ok(entries) = std::fs::read_dir(winget_pkgs) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if let Ok(sub) = std::fs::read_dir(&p) {
-                    for s in sub.flatten() {
-                        let adb = s.path().join("adb.exe");
-                        if adb.is_file() {
-                            candidates.push(adb);
+    let resolved = if run_command_with_timeout("adb", &["version"], Duration::from_secs(2)).is_ok()
+    {
+        Some("adb".to_string())
+    } else {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let base = PathBuf::from(&local);
+            candidates.push(
+                base.join("Android")
+                    .join("Sdk")
+                    .join("platform-tools")
+                    .join("adb.exe"),
+            );
+            let winget_pkgs = base.join("Microsoft").join("WinGet").join("Packages");
+            if let Ok(entries) = std::fs::read_dir(winget_pkgs) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if let Ok(sub) = std::fs::read_dir(&p) {
+                        for s in sub.flatten() {
+                            let adb = s.path().join("adb.exe");
+                            if adb.is_file() {
+                                candidates.push(adb);
+                            }
                         }
                     }
                 }
             }
         }
+        candidates
+            .into_iter()
+            .find(|p| p.is_file())
+            .map(|p| p.to_string_lossy().into_owned())
+    };
+    if let Some(ref found) = resolved
+        && let Ok(mut guard) = ADB_CACHE.lock()
+    {
+        *guard = Some(found.clone());
     }
-    candidates
-        .into_iter()
-        .find(|p| p.is_file())
-        .map(|p| p.to_string_lossy().into_owned())
+    resolved
 }
 
 pub fn collect_local_wifi() -> WifiHealth {
@@ -1561,5 +1643,35 @@ Phone Id=0
         assert_eq!(report.cached_duplicates, 3);
         assert_eq!(report.frozen_slots, 1);
         assert_eq!(report.protocol_faults_count, 2);
+        assert!(
+            report
+                .recent_events
+                .iter()
+                .any(|e| e.code == "DATA_STALL" && e.detail.contains("卡 2"))
+        );
+    }
+
+    #[test]
+    fn run_command_with_timeout_drains_large_stdout_and_checks_exit_status() {
+        #[cfg(target_os = "windows")]
+        let (prog, ok_args, fail_args) = (
+            "powershell",
+            vec!["-NoProfile", "-Command", "Write-Output ('x' * 65536)"],
+            vec!["-NoProfile", "-Command", "exit 7"],
+        );
+        #[cfg(not(target_os = "windows"))]
+        let (prog, ok_args, fail_args) = (
+            "sh",
+            vec!["-c", "head -c 65536 /dev/zero | tr '\\0' 'x'"],
+            vec!["-c", "exit 7"],
+        );
+
+        let out = run_command_with_timeout(prog, &ok_args, Duration::from_secs(5))
+            .expect("large stdout should drain without pipe deadlock");
+        assert!(out.trim().len() >= 65536);
+
+        let err = run_command_with_timeout(prog, &fail_args, Duration::from_secs(5))
+            .expect_err("non-zero exit should return Err");
+        assert!(err.contains("7"));
     }
 }

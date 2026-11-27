@@ -2,12 +2,26 @@ use serde::{Deserialize, Serialize};
 use std::{
     net::IpAddr,
     process::Command,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const GEO_PROVIDER: &str = "https://ipwho.is";
 
 const PROVIDERS: [&str; 2] = ["https://api64.ipify.org", "https://api.ipify.org"];
+const HTTPS_204_PROVIDERS: [&str; 2] = [
+    "https://www.gstatic.com/generate_204",
+    "https://cp.cloudflare.com/generate_204",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpsProbeResult {
+    pub observed_at: u64,
+    pub status_code: Option<u16>,
+    pub latency_ms: Option<u64>,
+    pub ok: bool,
+    pub error: Option<String>,
+    pub provider: Option<String>,
+}
 
 #[derive(Serialize)]
 pub struct EgressAddress {
@@ -166,9 +180,119 @@ fn request(proxy: Option<&str>, provider: &'static str) -> Result<EgressAddress,
     })
 }
 
+fn https_204_arguments(provider: &str) -> Vec<String> {
+    [
+        "-q",
+        "--silent",
+        "--show-error",
+        "--connect-timeout",
+        "4",
+        "--max-time",
+        "6",
+        "--max-filesize",
+        "8192",
+        "--proto",
+        "=https",
+        "--proxy",
+        "",
+        "--noproxy",
+        "*",
+        "-o",
+        if cfg!(windows) { "NUL" } else { "/dev/null" },
+        "-w",
+        "%{http_code}",
+        provider,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+fn parse_http_status_code(bytes: &[u8]) -> Option<u16> {
+    let text = std::str::from_utf8(bytes).ok()?.trim();
+    let code: u16 = text.parse().ok()?;
+    (100..=599).contains(&code).then_some(code)
+}
+
+/// 探测本机系统直出 HTTPS 204 连通性与首包时延，保留 TLS 校验并不跟随重定向。
+/// Probe direct HTTPS 204 reachability and latency while enforcing TLS verification and no redirects.
+pub fn probe_https_204() -> HttpsProbeResult {
+    let mut last_error = "HTTPS 204 探测失败".to_string();
+    for provider in HTTPS_204_PROVIDERS {
+        let started = Instant::now();
+        let mut command = Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let observed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        match command.args(https_204_arguments(provider)).output() {
+            Ok(output) if output.status.success() => {
+                let latency_ms = started.elapsed().as_millis() as u64;
+                if let Some(code) = parse_http_status_code(&output.stdout) {
+                    let ok = code == 204 || (200..300).contains(&code);
+                    return HttpsProbeResult {
+                        observed_at,
+                        status_code: Some(code),
+                        latency_ms: Some(latency_ms),
+                        ok,
+                        error: None,
+                        provider: Some(provider.to_string()),
+                    };
+                }
+                last_error = "HTTPS 响应状态码无效".into();
+            }
+            Ok(output) => {
+                last_error = match output.status.code() {
+                    Some(28) => "HTTPS 204 超时".into(),
+                    Some(35 | 60) => "TLS 校验或握手失败".into(),
+                    Some(6) => "DNS 解析失败".into(),
+                    Some(7) => "连接被拒绝或不可达".into(),
+                    Some(code) => format!("探测失败（curl {code}）"),
+                    None => "探测被中断".into(),
+                };
+            }
+            Err(_) => {
+                last_error = "无法启动系统 curl".into();
+                break;
+            }
+        }
+    }
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    HttpsProbeResult {
+        observed_at,
+        status_code: None,
+        latency_ms: None,
+        ok: false,
+        error: Some(last_error),
+        provider: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn https_204_arguments_enforce_tls_and_no_redirects() {
+        let args = https_204_arguments(HTTPS_204_PROVIDERS[0]);
+        assert!(args.windows(2).any(|a| a == ["--proto", "=https"]));
+        assert!(args.windows(2).any(|a| a == ["--noproxy", "*"]));
+        assert!(
+            !args
+                .iter()
+                .any(|a| a == "-k" || a == "--insecure" || a == "--location" || a == "-L")
+        );
+        assert_eq!(parse_http_status_code(b"204\n"), Some(204));
+        assert_eq!(parse_http_status_code(b"000"), None);
+        assert_eq!(parse_http_status_code(b"bad"), None);
+    }
     #[test]
     fn system_and_proxy_arguments_are_explicit_and_keep_tls_verification() {
         let system = arguments(None, PROVIDERS[0]);

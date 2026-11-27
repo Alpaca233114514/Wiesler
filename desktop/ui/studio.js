@@ -1,14 +1,38 @@
 (() => {
   'use strict';
-  const $ = id => document.getElementById(id), M = window.StudioModel;
+  const $ = id => document.getElementById(id), M = window.StudioModel, Q = window.QualityModel;
   const svgNS = 'http://www.w3.org/2000/svg';
   const invoke = window.__TAURI__?.core?.invoke;
+  const readStorage = key => { try { return window.localStorage?.getItem(key) || ''; } catch (_) { return ''; } };
+  const writeStorage = (key, value) => {
+    try {
+      if (value == null) window.localStorage?.removeItem(key);
+      else window.localStorage?.setItem(key, value);
+    } catch (_) {}
+  };
   let frames = [], current = null, selected = null, tab = 'overview', lastInspectKey = '';
   let frozen = false, replay = null, timer, generation = 0, liveBusy = false;
-  let collecting = false, activeController = '', view = 'graph', rebaseline = false, groupMode = 'site';
+  let collecting = false, activeController = '', view = 'home', rebaseline = false, groupMode = 'site';
   let systemCurrent = null, systemError = null, systemBusy = false, systemTimer, controllerFrame = null;
-  let egressGeneration = 0, replayFrames = null, animationEnabled = true;
+  let egressGeneration = 0, replayFrames = null, animationEnabled = true, userPulsePreference = true;
   let discovering = false, scanPromise = null, discoveryMessage = '';
+  let perfMode = Q?.resolvePerformanceMode?.(readStorage('wiesler.performanceMode')) || {
+    code: 'balanced', label: '均衡模式', summary: '1s 活跃采样 · RF 异常自动提速 · 兼顾响应与占用（推荐）',
+    activeTickMs: 1000, systemTickMs: 3000, icmpIntervalMs: 1000, rfSteadyPollMs: 6000, rfEscalatedPollMs: 3000, allowPulseAnimation: true
+  };
+  let themeMode = Q?.resolveThemeMode?.(readStorage('wiesler.theme')) || { code: 'system', label: '跟随系统' };
+  let settingsTab = 'controller';
+  const qualityHistory = Q?.createHistoryBuffer ? Q.createHistoryBuffer(60) : null;
+  const homeState = {
+    httpsProbe: null,
+    dnsInspection: null,
+    systemEgress: null,
+    systemEgressError: null,
+    proxyEgress: null,
+    proxyEgressError: null,
+    checkBusy: false,
+    checkToken: 0
+  };
   const pulseGroups = new Map();
   let scale = 1, pan = {x:0,y:0}, positions = new Map(), drag = null, ignoreClick = false;
   const text = (tag, content, cls) => {const el=document.createElement(tag);el.textContent=content;if(cls)el.className=cls;return el;};
@@ -21,7 +45,7 @@
   function accept(next) {
     current=next;frames.push(next);if(frames.length>60)frames.shift();
     $('snapshot-count').textContent=`${frames.length} 次快照`;
-    renderMonitor();renderStatus();
+    renderMonitor();renderStatus();renderHome();
     if(!frozen && !replay) render();
   }
   function renderStatus() {
@@ -31,10 +55,179 @@
     $('egress-panel').hidden=!['graph','monitor'].includes(view);
     $('discover').disabled=discovering;
     $('controller-address').textContent=activeController;
+    if($('settings-summary-controller')){
+      $('settings-summary-controller').textContent=!activeController?'未连接':controllerFrame&&!controllerFrame.error?'已连接':'连接异常';
+    }
     $('source-state').hidden=false;$('statusbar').hidden=false;
     $('capture-state').textContent = replay ? `${frozen?'已冻结':'回放中'} · ${collecting&&!document.hidden?'采集继续':'采集暂停'}` : '';
     $('capture-toggle').disabled=!invoke;
     $('capture-toggle').textContent=collecting?'暂停采集':'恢复采集';
+  }
+  function currentQualityInput() {
+    const loss = window.MonitorTools?.getLossStats?.() || { running: false, target: '1.1.1.1', sent: 0, received: 0, lossPercent: null, avgRttMs: null, samples: [] };
+    const rfReport = window.MonitorTools?.getRfReport?.() || null;
+    const online = typeof window.navigator?.onLine === 'boolean' ? window.navigator.onLine : true;
+    const validated = homeState.httpsProbe
+      ? Boolean(homeState.httpsProbe.ok)
+      : (homeState.systemEgress ? true : (homeState.systemEgressError && !online ? false : undefined));
+    const transportLabel = rfReport?.wifi?.available ? 'Wi-Fi' : '本机网络';
+    const flows = current?.flows || [];
+    return {
+      nowMs: Date.now(),
+      link: { connected: online, validated, transportLabel },
+      pingTarget: loss.target,
+      pingRunning: loss.running,
+      recentPings: loss.samples,
+      lossPercent: loss.lossPercent,
+      averageRttMs: loss.avgRttMs,
+      pingSent: loss.sent,
+      pingReceived: loss.received,
+      dnsInspection: homeState.dnsInspection || activePrivacy?.dns?.value || null,
+      httpsProbe: homeState.httpsProbe,
+      systemEgress: homeState.systemEgress,
+      systemEgressError: homeState.systemEgressError,
+      proxyEgress: homeState.proxyEgress,
+      proxyEgressError: homeState.proxyEgressError,
+      rfReport,
+      controllerEnabled: Boolean(activeController),
+      controllerHealthy: Boolean(activeController && controllerFrame && !controllerFrame.error),
+      activeFlowCount: current ? flows.length : null,
+      proxyFlowCount: flows.filter(f => f.routing === 'proxy').length,
+      recentRequestLogs: window.MonitorTools?.getRequestLogs?.() || []
+    };
+  }
+  function renderHome() {
+    if (!Q || !$('home-score')) return;
+    const input = currentQualityInput();
+    const snapshot = Q.evaluate(input, qualityHistory ? qualityHistory.snapshot() : []);
+    if (qualityHistory && (input.pingSent > 0 || input.httpsProbe || input.rfReport || input.systemEgress)) {
+      qualityHistory.record(snapshot, input.averageRttMs, input.lossPercent);
+    }
+    const historyPoints = qualityHistory ? qualityHistory.snapshot() : [];
+    const tone = snapshot.grade?.tone || 'neutral';
+    const score = snapshot.overallScore;
+    $('home-score').textContent = score != null ? String(score) : '—';
+    $('home-grade').textContent = snapshot.grade ? `${snapshot.grade.badge} · ${snapshot.grade.label}` : '待体检';
+    $('home-grade').setAttribute('data-tone', tone);
+    const arc = $('home-gauge-arc');
+    if (arc) {
+      const circumference = 2 * Math.PI * 48;
+      const pct = score != null ? Math.max(0, Math.min(100, score)) / 100 : 0;
+      arc.setAttribute('stroke-dasharray', circumference.toFixed(2));
+      arc.setAttribute('stroke-dashoffset', (circumference * (1 - pct)).toFixed(2));
+      arc.setAttribute('data-tone', tone);
+    }
+    $('home-headline').textContent = snapshot.headline;
+    $('home-summary').textContent = snapshot.summary;
+    $('home-advice').textContent = (score != null && score < 70) || snapshot.measuredDimensions < snapshot.totalApplicableDimensions ? snapshot.advice : '';
+    const valid = current && !current.error && current.download != null;
+    $('home-rate-rx').textContent = `↓ ${valid && current.rx != null ? `${M.bytes(current.rx)}/s` : '—'}`;
+    $('home-rate-tx').textContent = `↑ ${valid && current.tx != null ? `${M.bytes(current.tx)}/s` : '—'}`;
+    const linkPill = $('home-link-status');
+    if (linkPill) {
+      const linkText = !input.link.connected ? '离线' : input.link.validated === false ? '未校验' : input.link.transportLabel;
+      const linkTone = !input.link.connected ? 'danger' : input.link.validated === false ? 'warn' : 'ok';
+      linkPill.textContent = linkText;
+      linkPill.setAttribute('data-tone', linkTone);
+    }
+    $('home-dim-coverage').textContent = `${snapshot.measuredDimensions}/${snapshot.totalApplicableDimensions} 维已测`;
+    if ($('home-perf-badge')) $('home-perf-badge').textContent = perfMode.label;
+    if ($('home-monitor-toggle')) $('home-monitor-toggle').textContent = input.pingRunning ? '停止监测' : '持续监测';
+    for (const [id, ip] of [['home-target-223', '223.5.5.5'], ['home-target-111', '1.1.1.1'], ['home-target-888', '8.8.8.8']]) {
+      $(id)?.setAttribute('aria-pressed', String(input.pingTarget === ip));
+    }
+
+    const dimBox = $('home-dimensions');
+    if (dimBox) {
+      dimBox.replaceChildren();
+      for (const dim of snapshot.dimensions) {
+        const cell = text('button', '', 'home-dim-cell');
+        cell.type = 'button';
+        cell.dataset.dim = dim.id;
+        cell.setAttribute('data-tone', !dim.available ? 'neutral' : dim.score >= 80 ? 'ok' : dim.score >= 55 ? 'warn' : 'danger');
+        const head = text('div', '', 'home-dim-head');
+        head.append(text('span', dim.label, 'home-dim-label'), text('strong', dim.score != null ? `${dim.score}` : '—', 'home-dim-score'));
+        const detailText = dim.detail && dim.statusText && dim.detail.startsWith(dim.statusText)
+          ? dim.detail
+          : [dim.statusText, dim.detail].filter(Boolean).join(' · ');
+        cell.append(head, text('div', dim.primaryMetric, 'home-dim-metric'), text('div', detailText, 'home-dim-detail'));
+        cell.onclick = () => {
+          if (dim.id === 'access_signal' || dim.id === 'latency_stability') selectView('monitor');
+          else if (dim.id === 'reachability_dns') selectView('privacy');
+          else selectView('settings');
+        };
+        dimBox.append(cell);
+      }
+    }
+
+    const scenarioBox = $('home-scenarios');
+    if (scenarioBox) {
+      scenarioBox.replaceChildren();
+      for (const sc of snapshot.scenarios) {
+        const card = text('div', '', 'home-scenario-cell');
+        card.setAttribute('data-status', sc.status);
+        const top = text('div', '', 'home-scenario-head');
+        top.append(text('strong', sc.title), text('span', sc.statusLabel, `home-scenario-badge status-${sc.status}`));
+        card.append(top, text('span', sc.detail, 'home-scenario-detail'));
+        scenarioBox.append(card);
+      }
+    }
+
+    const line = $('home-trend-line'), area = $('home-trend-area'), meta = $('home-trend-meta');
+    if (line && area) {
+      if (historyPoints.length >= 2) {
+        const coords = historyPoints.map((pt, idx) => {
+          const x = (idx / Math.max(1, historyPoints.length - 1)) * 800;
+          const y = 112 - (Math.max(0, Math.min(100, pt.score)) / 100) * 100;
+          return [x, y];
+        });
+        const path = coords.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+        line.setAttribute('d', path);
+        area.setAttribute('d', `${path} L${coords.at(-1)[0].toFixed(1)},116 L${coords[0][0].toFixed(1)},116 Z`);
+      } else {
+        line.setAttribute('d', '');
+        area.setAttribute('d', '');
+      }
+    }
+    if (meta) {
+      const parts = [`${historyPoints.length} 次记录`];
+      if (Number.isFinite(input.averageRttMs)) parts.push(`平均 RTT ${input.averageRttMs.toFixed(1)} ms`);
+      if (snapshot.jitterMs != null) parts.push(`抖动 ${snapshot.jitterMs.toFixed(1)} ms`);
+      if (Number.isFinite(input.lossPercent)) parts.push(`丢包 ${input.lossPercent.toFixed(1)}%`);
+      meta.textContent = parts.join(' · ');
+    }
+  }
+  async function runHomeQualityCheck() {
+    if (homeState.checkBusy) return;
+    if (!invoke) {
+      if ($('home-summary')) $('home-summary').textContent = '综合体检请使用 Wiesler 桌面程序。';
+      return;
+    }
+    homeState.checkBusy = true;
+    const token = ++homeState.checkToken;
+    if ($('home-check-btn')) { $('home-check-btn').disabled = true; $('home-check-btn').textContent = '体检中…'; }
+    const lossStats = window.MonitorTools?.getLossStats?.();
+    const tasks = [
+      Promise.resolve(invoke('probe_https_204'))
+        .then(res => { if (token === homeState.checkToken) { homeState.httpsProbe = res; renderHome(); } })
+        .catch(err => { if (token === homeState.checkToken) { homeState.httpsProbe = { ok: false, error: err?.message || String(err) }; renderHome(); } }),
+      Promise.resolve(invoke('inspect_dns'))
+        .then(res => { if (token === homeState.checkToken) { homeState.dnsInspection = res; renderHome(); } })
+        .catch(err => { if (token === homeState.checkToken) { homeState.dnsInspection = { error: err?.message || String(err), queries: [] }; renderHome(); } }),
+      refreshEgress(),
+      Promise.resolve(window.MonitorTools?.probeRfOnce?.()).catch(() => null),
+      lossStats?.running
+        ? Promise.resolve(lossStats)
+        : Promise.resolve(window.MonitorTools?.runSinglePingBurst?.(lossStats?.target, 3)).catch(() => null)
+    ];
+    try { await Promise.allSettled(tasks); }
+    finally {
+      if (token === homeState.checkToken) {
+        homeState.checkBusy = false;
+        if ($('home-check-btn')) { $('home-check-btn').disabled = false; $('home-check-btn').textContent = '一键体检'; }
+        renderHome();
+      }
+    }
   }
   function renderMonitor() {
     renderPrivacy();
@@ -284,7 +477,9 @@
           result={value};
         }catch(e){result={error:e?.message||String(e)};}
         if(token!==privacyRunToken)return;
-        activePrivacy[key]=result;renderActivePrivacy();
+        activePrivacy[key]=result;
+        if(key==='dns'&&result.value){homeState.dnsInspection=result.value;renderHome();}
+        renderActivePrivacy();
       }));
     }finally{privacyRunBusy=false;$('privacy-run').disabled=false;}
   }
@@ -323,7 +518,14 @@
     if(!report.findings.length)list.append(text('p',current?'当前连接快照无异常项。':'等待连接采样。'));
   }
   $('privacy-proxy').onchange=()=>{
-    privacyPolicy={...privacyPolicy,expectProxy:$('privacy-proxy').checked};renderPrivacy();
+    privacyPolicy={...privacyPolicy,expectProxy:$('privacy-proxy').checked};
+    if($('settings-expect-proxy'))$('settings-expect-proxy').checked=privacyPolicy.expectProxy;
+    renderPrivacy();
+  };
+  if($('settings-expect-proxy'))$('settings-expect-proxy').onchange=()=>{
+    privacyPolicy={...privacyPolicy,expectProxy:$('settings-expect-proxy').checked};
+    if($('privacy-proxy'))$('privacy-proxy').checked=privacyPolicy.expectProxy;
+    renderPrivacy();
   };
   $('privacy-policy').onsubmit=e=>{
     e.preventDefault();const threshold=Number($('privacy-threshold').value);
@@ -342,16 +544,30 @@
   function selectView(next) {
     if(view!==next)$('workspace-content').scrollTop=0;
     view=next;
-    for(const name of ['graph','monitor','diagnostics','privacy','settings']){
-      $(`view-${name}`).classList.toggle('active',name===view);
-      $(`view-${name}`).setAttribute('aria-pressed',String(name===view));
+    for(const name of ['home','graph','monitor','diagnostics','privacy','settings']){
+      $(`view-${name}`)?.classList.toggle('active',name===view);
+      $(`view-${name}`)?.setAttribute('aria-pressed',String(name===view));
     }
+    if($('home-view'))$('home-view').hidden=view!=='home';
     $('privacy-view').hidden=view!=='privacy';$('graph-view').hidden=view!=='graph';$('monitor-view').hidden=view!=='monitor';$('diagnostics').hidden=view!=='diagnostics';$('settings').hidden=view!=='settings';
-    renderStatus();if(view==='graph')render();
+    renderStatus();
+    if(view==='home')renderHome();
+    if(view==='graph')render();
     if(view==='diagnostics')window.MonitorTools.discoverDatabases?.();
     if(view==='privacy'&&dnsCapture)pollDns();
   }
-  for(const name of ['graph','monitor','diagnostics','privacy','settings'])$(`view-${name}`).onclick=()=>selectView(name);
+  for(const name of ['home','graph','monitor','diagnostics','privacy','settings'])if($(`view-${name}`))$(`view-${name}`).onclick=()=>selectView(name);
+  if($('home-check-btn'))$('home-check-btn').onclick=runHomeQualityCheck;
+  if($('home-monitor-toggle'))$('home-monitor-toggle').onclick=()=>{
+    const loss=window.MonitorTools?.getLossStats?.();
+    if(loss?.running)window.MonitorTools?.stopLoss?.();
+    else window.MonitorTools?.startLoss?.();
+    renderHome();
+  };
+  for(const [id,ip] of [['home-target-223','223.5.5.5'],['home-target-111','1.1.1.1'],['home-target-888','8.8.8.8']]){
+    if($(id))$(id).onclick=()=>{window.MonitorTools?.setLossTarget?.(ip);renderHome();};
+  }
+  window.MonitorTools?.onChange?.(()=>renderHome());
   function render() {
     const flows=visible();
     if(!flows.some(f=>f.id===selected))selected=flows[0]?.id || null;
@@ -577,8 +793,90 @@
     body.replaceChildren(...nodes);
     body.scrollTop=prevScroll;
   }
-  $('flow-animation').checked=true;document.body?.classList.add('flow-animation');
-  $('flow-animation').onchange=()=>{animationEnabled=$('flow-animation').checked;document.body?.classList.toggle('flow-animation',animationEnabled);renderGraph(visible());};
+  function applyPerformanceMode(code, persist = true) {
+    perfMode = Q?.resolvePerformanceMode?.(code) || perfMode;
+    if (persist) writeStorage('wiesler.performanceMode', perfMode.code);
+    window.MonitorTools?.setPerformanceMode?.(perfMode);
+    animationEnabled = userPulsePreference && perfMode.allowPulseAnimation;
+    if ($('flow-animation')) $('flow-animation').checked = animationEnabled;
+    document.body?.classList.toggle('flow-animation', animationEnabled);
+    for (const key of ['eco', 'balanced', 'high']) {
+      $(`perf-mode-${key}`)?.setAttribute('aria-pressed', String(perfMode.code === key));
+    }
+    if ($('perf-mode-desc')) $('perf-mode-desc').textContent = perfMode.summary;
+    if ($('settings-summary-perf')) $('settings-summary-perf').textContent = perfMode.label;
+    if ($('home-perf-badge')) $('home-perf-badge').textContent = perfMode.label;
+    renderGraph(visible());
+  }
+  function systemColorSchemeLabel() {
+    const dark = Boolean(window.matchMedia?.('(prefers-color-scheme: dark)')?.matches);
+    return dark ? '当前深色' : '当前浅色';
+  }
+  function applyThemeMode(code, persist = true) {
+    themeMode = Q?.resolveThemeMode?.(code) || { code: 'system', label: '跟随系统' };
+    if (persist) {
+      // 遵循系统时移除持久化键，固定浅色/深色时写入字面值。 / Clear stored override for system; persist literal scheme otherwise.
+      writeStorage('wiesler.theme', themeMode.code === 'system' ? null : themeMode.code);
+    }
+    const meta = document.querySelector?.('meta[name="color-scheme"]');
+    if (meta) meta.content = themeMode.code === 'system' ? 'light dark' : themeMode.code;
+    if ($('theme-mode-system')) $('theme-mode-system').textContent = `跟随系统（${systemColorSchemeLabel()}）`;
+    for (const key of ['system', 'light', 'dark']) {
+      $(`theme-mode-${key}`)?.setAttribute('aria-pressed', String(themeMode.code === key));
+    }
+    if ($('settings-summary-theme')) $('settings-summary-theme').textContent = themeMode.label;
+  }
+  function selectSettingsTab(next) {
+    settingsTab = next;
+    for (const key of ['controller', 'monitoring', 'appearance', 'about']) {
+      const btn = $(`settings-tab-${key}`);
+      const panel = $(`settings-panel-${key}`);
+      const active = key === settingsTab;
+      if (btn) {
+        btn.setAttribute('aria-selected', String(active));
+        btn.tabIndex = active ? 0 : -1;
+      }
+      if (panel) panel.hidden = !active;
+    }
+  }
+  const settingsTabs = ['controller', 'monitoring', 'appearance', 'about'];
+  settingsTabs.forEach((key, index) => {
+    const btn = $(`settings-tab-${key}`);
+    if (!btn) return;
+    btn.onclick = () => selectSettingsTab(key);
+    btn.onkeydown = event => {
+      const count = settingsTabs.length;
+      const next = { ArrowLeft: (index + count - 1) % count, ArrowRight: (index + 1) % count, Home: 0, End: count - 1 }[event.key];
+      if (next === undefined) return;
+      event.preventDefault();
+      const target = $(`settings-tab-${settingsTabs[next]}`);
+      target?.focus?.();
+      selectSettingsTab(settingsTabs[next]);
+    };
+  });
+  for (const key of ['eco', 'balanced', 'high']) {
+    if ($(`perf-mode-${key}`)) $(`perf-mode-${key}`).onclick = () => applyPerformanceMode(key, true);
+  }
+  for (const key of ['system', 'light', 'dark']) {
+    if ($(`theme-mode-${key}`)) $(`theme-mode-${key}`).onclick = () => applyThemeMode(key, true);
+  }
+  window.addEventListener('storage', event => {
+    if (event.key === 'wiesler.theme') applyThemeMode(event.newValue || 'system', false);
+    if (event.key === 'wiesler.performanceMode') applyPerformanceMode(event.newValue || 'balanced', false);
+  });
+  window.matchMedia?.('(prefers-color-scheme: dark)')?.addEventListener?.('change', () => {
+    // 系统明暗切换时仅更新提示文字，绝不清除用户手动固定的主题。 / Refresh system hint only; never erase an explicit user pin.
+    if ($('theme-mode-system')) $('theme-mode-system').textContent = `跟随系统（${systemColorSchemeLabel()}）`;
+  });
+  applyPerformanceMode(perfMode.code, false);
+  applyThemeMode(themeMode.code, false);
+  selectSettingsTab('controller');
+  $('flow-animation').onchange=()=>{
+    userPulsePreference = $('flow-animation').checked;
+    animationEnabled = userPulsePreference;
+    document.body?.classList.toggle('flow-animation',animationEnabled);
+    renderGraph(visible());
+  };
   $('group-session').onchange=()=>choose($('group-session').value);
   const inspectorTabs=Array.from(document.querySelectorAll('.inspector-tabs [role="tab"]'));
   inspectorTabs.forEach((button,index)=>{
@@ -607,6 +905,8 @@
   $('now').onclick=unfreeze;
   function reset(){
     privacyRunToken++;activePrivacy=null;renderActivePrivacy();
+    homeState.checkToken++;homeState.checkBusy=false;homeState.systemEgress=null;homeState.systemEgressError=null;homeState.proxyEgress=null;homeState.proxyEgressError=null;
+    if($('home-check-btn')){$('home-check-btn').disabled=false;$('home-check-btn').textContent='一键体检';}
     for(const [key,group] of pulseGroups)retirePulses(key,group,true);
     generation++;egressGeneration++;clearTimeout(timer);clearTimeout(systemTimer);collecting=!!invoke;
     for(const route of ['system','proxy']){$(`egress-${route}-ip`).textContent='—';$(`egress-${route}-status`).textContent='尚未探测';$(`egress-${route}-location`).textContent='地理位置未知';}
@@ -630,7 +930,7 @@
       systemBusy=false;
       if(token===generation&&collecting&&!document.hidden){
         if(!activeController||!controllerFrame||controllerFrame.error)accept(M.mergeSources(controllerFrame,systemCurrent,systemError));
-        renderStatus();systemTimer=setTimeout(()=>pollSystem(token),3000);
+        renderStatus();systemTimer=setTimeout(()=>pollSystem(token),perfMode.systemTickMs || 3000);
       }
     }
   }
@@ -641,7 +941,7 @@
     liveBusy=true;
     try{const raw=await invoke('snapshot',{controller:activeController});if(token!==generation||document.hidden)return;window.MonitorTools.appendRequestLog(raw.http_status,null);window.MonitorTools.setControllerHealth({connected:true,healthy:true,error:null});controllerFrame=M.frame(raw,rebaseline?null:controllerFrame,raw.observed_at);accept(M.mergeSources(controllerFrame,systemCurrent,systemError));rebaseline=false;}
     catch(e){if(token!==generation||document.hidden)return;const next={time:Date.now(),flows:[],events:[],source:'live',error:e?.message||String(e)};window.MonitorTools.appendRequestLog(e?.http_status,next.error);window.MonitorTools.setControllerHealth({connected:true,healthy:false,error:next.error});controllerFrame=next;accept(M.mergeSources(controllerFrame,systemCurrent,systemError));}
-    finally{liveBusy=false;if(token===generation&&collecting&&!document.hidden)timer=setTimeout(()=>poll(token),1000);}
+    finally{liveBusy=false;if(token===generation&&collecting&&!document.hidden)timer=setTimeout(()=>poll(token),perfMode.activeTickMs || 1000);}
   }
   async function refreshEgress(){
     if(!invoke)return;
@@ -649,11 +949,13 @@
     $('egress-refresh').disabled=true;
     await Promise.all(['system','proxy'].map(async route=>{
       $(`egress-${route}-ip`).textContent='—';$(`egress-${route}-location`).textContent='地理位置未知';
-      if(route==='proxy'&&!controller){$('egress-proxy-status').textContent='未连接控制器';return;}
+      if(route==='proxy'&&!controller){$('egress-proxy-status').textContent='未连接控制器';homeState.proxyEgress=null;homeState.proxyEgressError=null;return;}
       $(`egress-${route}-status`).textContent='探测中…';
       try{
         const result=await invoke('egress_address',{controller:controller || null,viaProxy:route==='proxy'});
         if(token!==egressGeneration)return;
+        if(route==='system'){homeState.systemEgress=result;homeState.systemEgressError=null;}
+        else{homeState.proxyEgress=result;homeState.proxyEgressError=null;}
         $(`egress-${route}-ip`).textContent=result.ip;
         $(`egress-${route}-ip`).title=`${result.provider || '出口探测'}${result.proxy?' · '+result.proxy:''}`;
         $(`egress-${route}-status`).textContent=time(result.observed_at);
@@ -662,7 +964,16 @@
         const place=[...new Set([country,geo?.region,geo?.city].filter(Boolean))].join(' · ');
         $(`egress-${route}-location`).textContent=[place || '地理位置未知',geo?.isp].filter(Boolean).join(' · ');
         $(`egress-${route}-location`).title=result.location_error || 'IP 地址库归属地 · ipwho.is';
-      }catch(error){if(token===egressGeneration)$(`egress-${route}-status`).textContent=error?.message||String(error);}
+        renderHome();
+      }catch(error){
+        if(token===egressGeneration){
+          const msg=error?.message||String(error);
+          if(route==='system'){homeState.systemEgress=null;homeState.systemEgressError=msg;}
+          else{homeState.proxyEgress=null;homeState.proxyEgressError=msg;}
+          $(`egress-${route}-status`).textContent=msg;
+          renderHome();
+        }
+      }
     }));
     if(token===egressGeneration)$('egress-refresh').disabled=false;
   }
@@ -704,5 +1015,8 @@
   };
   window.addEventListener('resize',()=>{positions.clear();renderGraph(visible());});
   document.addEventListener('visibilitychange',()=>{clearTimeout(timer);clearTimeout(systemTimer);generation++;discovering=false;renderStatus();renderGraph(visible());if(document.hidden)return;if(collecting){if(!activeController){discover();return;}rebaseline=true;pollSystem(generation);poll(generation);}});
+  window.addEventListener('online', renderHome);
+  window.addEventListener('offline', renderHome);
+  renderHome();
   discover();
 })();

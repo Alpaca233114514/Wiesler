@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory)][string]$WindowsPackage,
     [Parameter(Mandatory)][string]$UnsignedApk,
     [Parameter(Mandatory)][string]$OutputDirectory,
@@ -7,11 +7,21 @@ param(
     [Parameter(Mandatory)][string]$SignTool,
     [Parameter(Mandatory)][string]$SourceCommit,
     [Parameter(Mandatory)][string]$BuildUrl,
+    [string]$Version = '',
     [string]$CertificateThumbprint = '6217E040E728117EABE9BCD7FA13BF6D954F4D61'
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 . "$PSScriptRoot/authenticode-status.ps1"
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $cargoToml = Get-Content -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'Cargo.toml') -Raw
+    if ($cargoToml -match '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"') {
+        $Version = $Matches[1]
+    } else {
+        throw 'Unable to resolve package version from Cargo.toml; pass -Version explicitly.'
+    }
+}
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid semantic version: $Version" }
 if (Test-Path $OutputDirectory) { throw 'Output already exists; select a new directory.' }
 if ((Get-Content (Join-Path $WindowsPackage 'SOURCE_COMMIT.txt')).Trim() -ne $SourceCommit) {
     throw 'Windows artifact source commit does not match.'
@@ -19,9 +29,9 @@ if ((Get-Content (Join-Path $WindowsPackage 'SOURCE_COMMIT.txt')).Trim() -ne $So
 $cert = Get-Item "Cert:/CurrentUser/My/$CertificateThumbprint"
 if (!$cert.HasPrivateKey -or $cert.NotAfter -le (Get-Date)) { throw 'Signing certificate unavailable or expired.' }
 New-Item -ItemType Directory $OutputDirectory | Out-Null
-$stage = Join-Path $OutputDirectory 'Wiesler-0.1.0-windows-x64'
+$stage = Join-Path $OutputDirectory "Wiesler-$Version-windows-x64"
 Copy-Item -LiteralPath $WindowsPackage -Destination $stage -Recurse
-$report = [ordered]@{version='0.1.0'; sourceCommit=$SourceCommit; buildUrl=$BuildUrl; windows=@(); android=$null}
+$report = [ordered]@{version=$Version; sourceCommit=$SourceCommit; buildUrl=$BuildUrl; windows=@(); android=$null}
 
 foreach ($name in @('wiesler.exe', 'wiesler-desktop.exe')) {
     $file = Join-Path $stage $name
@@ -44,7 +54,7 @@ foreach ($name in @('wiesler.exe', 'wiesler-desktop.exe')) {
 }
 Export-Certificate -Cert $cert -FilePath (Join-Path $OutputDirectory 'Wiesler-windows-signing.cer') | Out-Null
 
-$apk = Join-Path $OutputDirectory 'Wiesler-0.1.0-android.apk'
+$apk = Join-Path $OutputDirectory "Wiesler-$Version-android.apk"
 $aligned = Join-Path $OutputDirectory 'android-aligned-unsigned.apk'
 & (Join-Path $AndroidBuildTools 'zipalign.exe') -p -f 4 $UnsignedApk $aligned
 if ($LASTEXITCODE) { throw 'APK alignment failed.' }
@@ -67,5 +77,5 @@ if (!$verification.ToLowerInvariant().Contains($fingerprint)) { throw 'Unexpecte
 Copy-Item $androidCertPath (Join-Path $OutputDirectory 'Wiesler-android-signing.cer')
 $report.android = [ordered]@{file=(Split-Path $apk -Leaf); certificateSha256=$fingerprint; verification=$verification.Trim()}
 $report | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $OutputDirectory 'signature-report.json') -Encoding utf8
-Compress-Archive -Path "$stage/*" -DestinationPath (Join-Path $OutputDirectory 'Wiesler-0.1.0-windows-x64.zip')
+Compress-Archive -Path "$stage/*" -DestinationPath (Join-Path $OutputDirectory "Wiesler-$Version-windows-x64.zip")
 Write-Output 'Signed packages and verification report ready. Upload only the ZIP, signed APK, public certificates and report.'
