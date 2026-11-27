@@ -71,3 +71,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## AndroidX Jetpack Compose & Material 3 Expressive
+
+- 来源：[AndroidX (frameworks/support)](https://android.googlesource.com/platform/frameworks/support/)，通过 Google Maven 引入 `androidx.compose:compose-bom:2026.06.01`（含 `ui`、`foundation`、`animation`、`material-icons-extended:1.7.8`）、`androidx.compose.material3:material3:1.5.0-alpha16` 与 `androidx.activity:activity-compose:1.13.0`，以及 Kotlin Compose 编译器插件 `2.2.20`。
+- 许可证：Apache License 2.0，完整许可见根目录 `LICENSE` 与 `android/app/src/main/assets/LICENSE-Apache-2.0.txt`。
+- 范围：用于 Android 客户端的 Material 3 Expressive 主题、动态取色、弹簧动效与交互组件；业务采集、图谱模型、出口探测、隐私检查及 SQLite 历史读取均为 Wiesler 原创实现。

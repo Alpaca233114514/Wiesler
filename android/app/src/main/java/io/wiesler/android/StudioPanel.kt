@@ -232,7 +232,7 @@ class StudioPanel(
         fun parse(item: JSONObject): StudioFlow {
             val metadata = item.optJSONObject("metadata") ?: JSONObject()
             fun value(camel: String, snake: String = camel) = metadata.optString(camel).ifBlank { metadata.optString(snake) }
-            val host = value("host").ifBlank { value("destinationIP", "destination_ip").ifBlank { "未知目标" } }
+            val host = value("host").ifBlank { value("sniffHost", "sniff_host").ifBlank { value("destinationIP", "destination_ip").ifBlank { "未知目标" } } }
             val chains = item.optJSONArray("chains")
             return StudioFlow(item.optString("id"), item.optString("start"), value("process").ifBlank { "未知应用" }, host,
                 studioEndpoint(value("sourceIP", "source_ip"), value("sourcePort", "source_port")),

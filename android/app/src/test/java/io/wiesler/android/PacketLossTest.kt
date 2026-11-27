@@ -42,4 +42,20 @@ class PacketLossTest {
         assertTrue(validPingTarget("127.0.0.1"))
         assertTrue(validPingTarget("1.1.1.1"))
     }
+
+    @Test fun icmpEchoPacketHasValidRfc1071ChecksumAndMatchesReply() {
+        val packet = buildIcmpEchoRequest(sequence = 0x1234, payloadSize = 16)
+        assertEquals(24, packet.size)
+        assertEquals(8, packet[0].toInt() and 0xFF)
+        assertEquals(0, packet[1].toInt() and 0xFF)
+        // 含校验和在内的全报文再算一次 RFC 1071 校验和必须为 0。 / Verifying checksum over complete packet must yield 0.
+        assertEquals(0, icmpChecksum(packet))
+
+        val reply = packet.copyOf()
+        reply[0] = 0 // ICMP Echo Reply
+        assertTrue(isMatchingIcmpEchoReply(reply, reply.size, 0x1234))
+        assertFalse(isMatchingIcmpEchoReply(reply, reply.size, 0x1235))
+        assertFalse(isMatchingIcmpEchoReply(packet, packet.size, 0x1234))
+        assertFalse(isMatchingIcmpEchoReply(reply, 4, 0x1234))
+    }
 }

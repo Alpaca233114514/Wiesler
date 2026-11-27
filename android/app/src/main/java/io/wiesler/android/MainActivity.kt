@@ -1,214 +1,686 @@
 package io.wiesler.android
 
-import android.app.Activity
-import android.app.AlertDialog
 import android.app.AppOpsManager
 import android.app.usage.NetworkStats
 import android.app.usage.NetworkStatsManager
-import android.content.Context
 import android.content.Intent
-import android.graphics.*
-import android.graphics.drawable.GradientDrawable
-import android.net.*
-import android.os.*
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.provider.OpenableColumns
 import android.provider.Settings
-import android.text.Editable
-import android.text.TextWatcher
-import android.text.InputType
-import android.view.*
-import android.widget.*
-import org.json.JSONObject
+import android.util.Log
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import io.wiesler.android.ui.AppUsageEntry
+import io.wiesler.android.ui.BannerTone
+import io.wiesler.android.ui.EgressUiState
+import io.wiesler.android.ui.PacketLossUiState
+import io.wiesler.android.ui.TopBannerMessage
+import io.wiesler.android.ui.WieslerActions
+import io.wiesler.android.ui.WieslerAppShell
+import io.wiesler.android.ui.WieslerExpressiveTheme
+import io.wiesler.android.ui.WieslerTab
+import io.wiesler.android.ui.WieslerUiState
 import java.net.HttpURLConnection
-import java.net.URI
+import java.net.InetAddress
+import java.net.Proxy
 import java.net.URL
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.Executors
 
-class MainActivity : Activity() {
-    private val bg = StudioColors.background
-    private val surface = StudioColors.surface
-    private val line = StudioColors.border
-    private val ink = StudioColors.ink
-    private val muted = StudioColors.muted
-    private val mint = StudioColors.mint
-    private val violet = StudioColors.blue
-    private val studio = StudioSession().apply { switchSource(true) }
-    private var studioPanel: StudioPanel? = null
-    private var demoTick = 0
+class MainActivity : ComponentActivity() {
     private val handler = Handler(Looper.getMainLooper())
-    private val worker = Executors.newFixedThreadPool(2)
+    private val worker = Executors.newFixedThreadPool(4)
     private val lossWorker = Executors.newSingleThreadExecutor()
-    private val lossWindow = PacketLossWindow()
-    private var lossTarget = "1.1.1.1"
-    private var lossRunning = false
-    private var lossGeneration = 0
-    private var lossProbe: IcmpProbe? = null
-    private var lossLabel: TextView? = null
-    private var lossStatusLabel: TextView? = null
-    private var lossStatus = "未开启"
-    private val lossTick = Runnable { sampleLoss() }
+
+    private val studio = StudioSession().apply { switchSource(true) }
+    private var demoTick = 0
     private val rates = RateTracker()
     private val trend = ArrayList<Rate?>()
     private val forwardRates = ForwardTrafficTracker()
     private val forwardTrend = ArrayList<Rate?>()
-    private var forwardEnabled = false
-    private var overseasExits = emptySet<String>()
-    private var forwardRate: Rate? = null
-    private var forwardState = "监控未开启"
-    private var forwardSampledAt = "尚未采样"
-    private var forwardChart: TrendView? = null
-    private var forwardMetrics: TextView? = null
-    private var forwardUpload: TextView? = null
-    private var forwardStatus: TextView? = null
-    private var forwardTotal: TextView? = null
-    private var routeFilter: TrafficRoute? = null
-    private lateinit var root: LinearLayout
-    private lateinit var body: LinearLayout
-    private lateinit var nav: LinearLayout
-    private lateinit var scroll: ScrollView
-    private var page = 0
+    private val mihomoTrend = ArrayList<Rate?>()
+    private val requestLogs = ArrayDeque<RequestLog>()
+    private val lossWindow = PacketLossWindow()
+    private val timedPings = ArrayDeque<TimedPingEvidence>()
+    private val qualityHistory = NetworkQualityHistoryBuffer()
+    private val rfEngine = RfMonitorEngine()
+    private var rfCollector: RfCellularCollector? = null
+    private var rfEnabled = false
+    private var rfStatusOverride: String? = null
+    private var lastControllerErrorAtMs: Long? = null
+    private var lastControllerErrorMessage: String? = null
+    private var cellularValidated: Boolean? = null
+    private var cellularLostAtMs: Long? = null
+    private var lastSevereRfBannerAtMs = 0L
+    private var cachedSystemLink = SystemLinkSnapshot()
+    private var lastDnsInspection: ActiveDnsInspection? = null
+    private var lastHttpsProbe: HttpsProbeSnapshot? = null
+    private var qualityCheckBusy = false
+    private var qualityCheckGeneration = 0
+    private var hasAutoCheckedQuality = false
+
     private var foreground = false
     private var paused = false
+    private var capturePaused = false
+    private var forwardEnabled = false
+    private var overseasExits = emptySet<String>()
+    private var controller = "http://127.0.0.1:9090"
+    private var secret = ""
+    private var controllerEnabled = false
+    private var controllerHealthy = false
+    private var inFlightControllerGeneration: Int? = null
+    private val controllerBusy: Boolean get() = inFlightControllerGeneration == controllerGeneration
+    private var controllerGeneration = 0
+    private var notifyNextControllerSuccess = false
+    private var notifyNextControllerError = false
+    private var bannerSeq = 0L
+    private var connectionState = "尚未连接手机控制器"
+    private var availableExitsCache = emptyList<String>()
     private var lastRate: Rate? = null
     private var lastRx = -1L
     private var lastTx = -1L
     private var sampledAt = "尚未采样"
-    private var download: TextView? = null
-    private var upload: TextView? = null
-    private var status: TextView? = null
-    private var networkText: TextView? = null
-    private var totalText: TextView? = null
-    private var chart: TrendView? = null
-    private var usageRows: LinearLayout? = null
-    private var connectionRows: LinearLayout? = null
-    private var controllerStatus: TextView? = null
-    private var controller = "http://127.0.0.1:9090"
-    private var secret = ""
-    private var controllerEnabled = false
-    private var controllerBusy = false
-    private var controllerGeneration = 0
-    private var connectionState = "尚未连接手机控制器"
-    private var connections = emptyList<JSONObject>()
-    private var query = ""
-    private var protocol = "全部"
+    private var forwardRate: Rate? = null
+    private var forwardState = "监控未开启"
+    private var forwardSampledAt = "尚未采样"
+    private var lossTarget = "1.1.1.1"
+    private var lossRunning = false
+    private var lossGeneration = 0
+    private var lossProbe: IcmpProbe? = null
+    private var lossStatus = "未开启 · 间隔 1 秒，超时 2 秒"
     private var usageBusy = false
     private var probeBusy = false
     private var probeResult = "按需检查 HTTPS 连通性"
-    private var probeLabel: TextView? = null
-    private val requestLogs = ArrayDeque<RequestLog>()
-    private var requestLogRows: LinearLayout? = null
+    private var egressGeneration = 0
+    private var privacyRunGeneration = 0
     private var lastPersistedAt = 0L
+    private var historyDirty = false
+    private var lastSystemProbeAt = 0L
+    private var lastTrafficSampleAtMs = 0L
+    private var trafficSampleInFlight = false
+    private var lastControllerFetchAtMs = 0L
+    private var controllerBackoffMs = 0L
+    private var defaultNetworkCallback: ConnectivityManager.NetworkCallback? = null
+    private var cachedNetworkSummary = "读取中"
+    private var cachedDiagnosticText = ""
+    private var cachedUsageAllowed = false
+    private var cachedPrivacyFrame: StudioFrame? = null
+    private var cachedPrivacyPolicy: PrivacyPolicy? = null
+    private var cachedPrivacyReport: PrivacyReport? = null
+    private var cachedPrivacySummary: PrivacySummary? = null
+    private var cachedGraphFrame: StudioFrame? = null
+    private var cachedGraphQuery: String = ""
+    private var cachedGraphProtocol: String = "全部"
+    private var cachedGraphSourceFilter: StudioSourceFilter = StudioSourceFilter.ALL
+    private var cachedGraphSelectedId: String? = null
+    private var cachedGraphOverseasExits: Set<String> = emptySet()
+    private var cachedGraphFilteredFlows: List<StudioFlow> = emptyList()
+    private var cachedGraphHostGroups: List<StudioHostGroup> = emptyList()
+    private var cachedGraphRateHistory: Map<String, List<Rate?>> = emptyMap()
+    private var linkEvidenceVersion = 0L
+    private var cachedRfSnapshot = RfDiagnosticsSnapshot()
+    private var cachedRfEngineVersion = -1L
+    private var cachedRfLinkVersion = -1L
+    private var cachedRfActive: Boolean? = null
+    private var cachedRfPerm: Boolean? = null
+    private var cachedRfStatusOverride: String? = null
+    private var cachedRfEvaluatedAtMs = 0L
+    private var qualityDirty = true
+    private var uiPrefs = AppUiPreferences()
+    private val sampleDateFmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.ROOT)
+    private val lossTimeFmt = SimpleDateFormat("HH:mm:ss", Locale.ROOT)
+    private var publishPending = false
+    private val publishRunnable = Runnable {
+        publishPending = false
+        if (!isDestroyed) publishUiStateNow()
+    }
+
+    private data class ParsedConnectionsSnapshot(
+        val time: Long,
+        val flows: List<StudioFlow>,
+        val counters: List<RoutedCounter>,
+        val exits: List<String>,
+        val downTotal: Long?,
+        val upTotal: Long?
+    )
+
+    private var uiState by mutableStateOf(WieslerUiState())
     private val connectivity get() = getSystemService(ConnectivityManager::class.java)
+    private val lossTick = Runnable { sampleLoss() }
+
+    private val openDbLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) importDatabase(uri)
+    }
+
+    private val rfPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val granted = RfCellularCollector.REQUIRED_PERMISSIONS.all { grants[it] == true } ||
+            RfCellularCollector.hasPermissions(this)
+        if (granted) {
+            rfStatusOverride = null
+            setRfMonitoringEnabled(true)
+            showTopBanner("射频监测权限已就绪", "已启动主动双卡蜂窝射频检测", BannerTone.SUCCESS, durationMs = 3200L)
+        } else {
+            rfEnabled = false
+            rfStatusOverride = "权限未授予，无法主动读取双卡基带 RSRP/RSRQ/SINR"
+            showTopBanner("未获得定位或手机状态权限", "请在系统设置中授权后开启射频检测", BannerTone.WARNING, durationMs = 4500L)
+            publishUiState()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        page = savedInstanceState?.getInt("page") ?: if (getPreferences(0).getBoolean("studioAvailable", false))
-            getPreferences(0).getInt("page", 4).coerceIn(0, 4) else 4
-        paused = savedInstanceState?.getBoolean("paused") ?: getPreferences(0).getBoolean("paused", false)
-        lossTarget = getPreferences(0).getString("lossTarget", "1.1.1.1") ?: "1.1.1.1"
-        controller = getPreferences(0).getString("controller", controller) ?: controller
-        overseasExits = getPreferences(0).getStringSet("overseasExits", emptySet())?.toSet() ?: emptySet()
-        forwardEnabled = getPreferences(0).getBoolean("forwardEnabled", false)
-        controllerEnabled = getPreferences(0).getBoolean("controllerEnabled", getPreferences(0).contains("controller"))
-        secret = runCatching { ControllerSecretStore(getPreferences(0)).read(controller) }.getOrElse {
+        enableEdgeToEdge()
+        val prefs = getPreferences(0)
+        uiPrefs = AppUiPreferencesStore.read(prefs)
+        val savedTabIndex = savedInstanceState?.getInt("tab") ?: prefs.getInt("ui_tab", 0)
+        val initialTab = WieslerTab.entries.firstOrNull { it.index == savedTabIndex } ?: WieslerTab.HOME
+        paused = savedInstanceState?.getBoolean("paused") ?: prefs.getBoolean("paused", false)
+        lossTarget = prefs.getString("lossTarget", "1.1.1.1") ?: "1.1.1.1"
+        controller = prefs.getString("controller", controller) ?: controller
+        overseasExits = prefs.getStringSet("overseasExits", emptySet())?.toSet() ?: emptySet()
+        studio.overseasExits = overseasExits
+        forwardEnabled = prefs.getBoolean("forwardEnabled", false)
+        rfEnabled = prefs.getBoolean("rfEnabled", false)
+        controllerEnabled = prefs.getBoolean("controllerEnabled", prefs.contains("controller"))
+        rfCollector = RfCellularCollector(
+            context = applicationContext,
+            executor = worker,
+            onSample = { sample ->
+                handler.post {
+                    if (isDestroyed) return@post
+                    rfEngine.ingest(sample)
+                    rfStatusOverride = null
+                    val snap = evaluateRfSnapshot(force = true)
+                    // 检测到干扰、失步或基带缓存冻结时自动提速射频采集，平稳期保持低功耗节拍。
+                    // Auto-escalate RF polling cadence on active anomaly or cache freeze; relax when clear.
+                    val escalated = snap.assessment.severity == RfSeverity.SEVERE_POLLUTION ||
+                        snap.assessment.severity == RfSeverity.INTERFERENCE ||
+                        snap.captureHealth.frozenSlotCount > 0
+                    rfCollector?.setAnomalyEscalated(escalated)
+                    if (snap.assessment.severity == RfSeverity.SEVERE_POLLUTION) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastSevereRfBannerAtMs >= 30_000L) {
+                            lastSevereRfBannerAtMs = now
+                            showTopBanner(
+                                title = "检测到环境级宽带通信污染",
+                                detail = snap.assessment.detail,
+                                tone = BannerTone.ERROR,
+                                durationMs = 6000L
+                            )
+                        }
+                    }
+                    qualityDirty = true
+                    publishUiState(immediate = false)
+                }
+            },
+            onCellularLinkState = { validated, lostAt ->
+                handler.post {
+                    if (isDestroyed) return@post
+                    if (cellularValidated == validated && lostAt == null) return@post
+                    cellularValidated = validated
+                    if (lostAt != null) cellularLostAtMs = lostAt
+                    linkEvidenceVersion++
+                    qualityDirty = true
+                    publishUiState(immediate = false)
+                }
+            },
+            onStatusError = { msg ->
+                handler.post {
+                    if (isDestroyed) return@post
+                    rfStatusOverride = msg
+                    publishUiState(immediate = false)
+                }
+            }
+        ).apply {
+            updateCadence(uiPrefs.performanceMode.rfSteadyPollMs, uiPrefs.performanceMode.rfEscalatedPollMs)
+        }
+        secret = runCatching { ControllerSecretStore(prefs).read(controller) }.getOrElse {
             controllerEnabled = false
-            Toast.makeText(this, "无法解密控制器密钥，请重新配置", Toast.LENGTH_LONG).show()
+            showTopBanner("无法解密控制器密钥", "Keystore 密钥不可用，请重新配置", BannerTone.ERROR, durationMs = 5500L)
             ""
         }
-        if (controllerEnabled) connectionState = "等待重新连接"
-        getPreferences(0).getString("history", null)?.let { stored ->
+        if (controllerEnabled) {
+            connectionState = "等待重新连接"
+            notifyNextControllerError = true
+        }
+        prefs.getString("history", null)?.let { stored ->
             runCatching { SavedHistory.decode(stored) }.onSuccess { history ->
-                trend.addAll(history.trend); forwardTrend.addAll(history.forwardTrend)
+                trend.addAll(history.trend)
+                forwardTrend.addAll(history.forwardTrend)
                 forwardRates.restoreTotals(history.rx, history.tx, overseasExits)
                 requestLogs.addAll(history.logs)
-                sampledAt = history.sampledAt; forwardSampledAt = history.forwardSampledAt
-            }.onFailure { Toast.makeText(this, "历史记录读取失败", Toast.LENGTH_LONG).show() }
-        }
-        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
-        root.setOnApplyWindowInsetsListener { v, insets ->
-            val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-            insets
-        }
-        val top = row().apply { setPadding(dp(23), dp(16), dp(23), dp(12)) }
-        top.addView(ImageView(this).apply {
-            setImageResource(R.drawable.ic_logo_mark)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            val pad = dp(7)
-            setPadding(pad, pad, pad, pad)
-            background = GradientDrawable().apply {
-                setColor(Color.rgb(24, 24, 24))
-                cornerRadius = dp(11).toFloat()
-                setStroke(dp(1), Color.rgb(62, 62, 62))
+                sampledAt = history.sampledAt
+                forwardSampledAt = history.forwardSampledAt
+            }.onFailure {
+                Toast.makeText(this, "历史记录读取失败", Toast.LENGTH_LONG).show()
             }
-        }, LinearLayout.LayoutParams(dp(38), dp(38)))
-        top.addView(label("Wiesler", 23, ink, true).apply { setPadding(dp(11), 0, 0, 0) }, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(top)
-        scroll = ScrollView(this).apply { isFillViewport = true; clipToPadding = false }
-        body = column().apply { setPadding(dp(22), dp(16), dp(22), dp(20)) }
-        scroll.addView(body)
-        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        nav = row().apply { setPadding(dp(12), dp(10), dp(12), dp(10)); setBackgroundColor(surface) }
-        root.addView(nav)
-        setContentView(root)
-        render()
+        }
+        uiState = uiState.copy(activeTab = initialTab, preferences = uiPrefs)
+        publishUiState()
+
+        val actions = buildActions()
+        setContent {
+            WieslerExpressiveTheme(
+                themePreference = uiState.preferences.themeMode,
+                dynamicColor = uiState.preferences.dynamicColor
+            ) {
+                WieslerAppShell(state = uiState, actions = actions)
+            }
+        }
     }
 
-    override fun onSaveInstanceState(out: Bundle) {
-        out.putInt("page", page); out.putBoolean("paused", paused)
-        super.onSaveInstanceState(out)
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt("tab", uiState.activeTab.index)
+        outState.putBoolean("paused", paused)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {
-        super.onResume(); foreground = true; rates.reset(); lastRate = null; appendSample(trend, null)
+        super.onResume()
+        foreground = true
+        controllerBackoffMs = 0L
+        rates.reset()
+        lastRate = null
+        appendSample(trend, null)
         studio.resetBaseline()
         resetForward()
-        handler.removeCallbacks(tick); handler.post(tick)
-        if (controllerEnabled && !controllerBusy) fetchConnections()
-        if (page == 1) showApps()
-        if (page == 0 || page == 3) render()
+        registerDefaultNetworkMonitor()
+        handler.removeCallbacks(tick)
+        handler.post(tick)
+        if (controllerEnabled && !controllerBusy && !capturePaused &&
+            (forwardEnabled || uiState.activeTab in setOf(WieslerTab.HOME, WieslerTab.GRAPH, WieslerTab.MONITOR, WieslerTab.PRIVACY))
+        ) {
+            fetchConnections()
+        }
+        if (rfEnabled && RfCellularCollector.hasPermissions(this)) {
+            rfCollector?.updateCadence(uiPrefs.performanceMode.rfSteadyPollMs, uiPrefs.performanceMode.rfEscalatedPollMs)
+            rfCollector?.start()
+        }
+        refreshSystemProbes(force = true)
+        if (uiState.activeTab == WieslerTab.MONITOR && cachedUsageAllowed) loadUsage()
+        if (!hasAutoCheckedQuality && uiState.activeTab == WieslerTab.HOME) {
+            hasAutoCheckedQuality = true
+            runQualityCheck()
+        }
+        publishUiState(immediate = true)
     }
 
     override fun onPause() {
-        foreground = false; controllerGeneration++; handler.removeCallbacks(tick); rates.reset(); lastRate = null
+        foreground = false
+        controllerGeneration++
+        handler.removeCallbacks(tick)
+        handler.removeCallbacks(publishRunnable)
+        publishPending = false
+        unregisterDefaultNetworkMonitor()
+        rates.reset()
+        lastRate = null
         studio.resetBaseline()
         resetForward()
         if (lossRunning) stopLoss("已进入后台，监控停止")
-        persistState()
+        rfCollector?.stop()
+        persistState(async = false)
         super.onPause()
     }
 
     override fun onDestroy() {
-        lossProbe?.cancel(); lossWorker.shutdownNow()
-        worker.shutdownNow(); handler.removeCallbacksAndMessages(null); secret = ""
+        unregisterDefaultNetworkMonitor()
+        rfCollector?.stop()
+        lossProbe?.cancel()
+        lossProbe = null
+        lossWorker.shutdownNow()
+        worker.shutdownNow()
+        handler.removeCallbacksAndMessages(null)
+        secret = ""
         super.onDestroy()
+    }
+
+    private fun buildActions(): WieslerActions = WieslerActions(
+        onSelectTab = { tab ->
+            uiState = uiState.copy(activeTab = tab)
+            if (tab == WieslerTab.HOME) {
+                qualityDirty = true
+                refreshSystemProbes(force = false)
+                if (!hasAutoCheckedQuality) {
+                    hasAutoCheckedQuality = true
+                    runQualityCheck()
+                }
+            }
+            if (tab == WieslerTab.MONITOR && usageAllowed() && uiState.appUsage.isEmpty()) loadUsage()
+            if (tab == WieslerTab.PRIVACY) refreshSystemNetwork()
+            if (foreground) {
+                handler.removeCallbacks(tick)
+                handler.post(tick)
+            }
+            persistState()
+            publishUiState(immediate = true)
+        },
+        onRunQualityCheck = { runQualityCheck() },
+        onToggleQualityMonitor = { enabled -> toggleQualityContinuousMonitor(enabled) },
+        onSelectQualityPingTarget = { target -> selectQualityPingTarget(target) },
+        onSwitchStudioSource = { live ->
+            if (studio.live != live) {
+                studio.switchSource(live)
+                if (!live) {
+                    demoTick = 0
+                    sampleDemo()
+                } else if (controllerEnabled && !controllerBusy && !capturePaused) {
+                    fetchConnections()
+                }
+                publishUiState()
+            }
+        },
+        onToggleFreeze = {
+            if (studio.held == null) studio.freeze() else studio.now()
+            publishUiState()
+        },
+        onToggleCapturePause = {
+            capturePaused = !capturePaused
+            if (capturePaused) {
+                controllerGeneration++
+                studio.resetBaseline()
+                resetForward()
+            } else if (controllerEnabled && !controllerBusy) {
+                fetchConnections()
+            }
+            publishUiState()
+        },
+        onReplayIndex = { index ->
+            studio.replay(index)
+            publishUiState()
+        },
+        onBackToNow = {
+            studio.now()
+            publishUiState()
+        },
+        onQueryChange = { q ->
+            studio.query = q
+            publishUiState()
+        },
+        onProtocolChange = { proto ->
+            studio.protocol = proto
+            publishUiState()
+        },
+        onSourceFilterChange = { filter ->
+            studio.sourceFilter = filter
+            publishUiState()
+        },
+        onGraphModeChange = { mode ->
+            studio.graphMode = mode
+            publishUiState()
+        },
+        onSelectFlow = { id ->
+            studio.selectedId = id
+            publishUiState()
+        },
+        onRefreshEgress = { refreshEgress() },
+        onToggleGlobal = { enabled ->
+            paused = !enabled
+            rates.reset()
+            lastRate = null
+            appendSample(trend, null)
+            persistState()
+            publishUiState()
+        },
+        onToggleForward = { enabled ->
+            forwardEnabled = enabled
+            controllerGeneration++
+            resetForward()
+            persistState()
+            publishUiState()
+        },
+        onJumpOverseasConnections = {
+            studio.sourceFilter = StudioSourceFilter.OVERSEAS
+            uiState = uiState.copy(activeTab = WieslerTab.GRAPH)
+            publishUiState()
+        },
+        onStartLoss = { target ->
+            lossTarget = target
+            getPreferences(0).edit().putString("lossTarget", target).apply()
+            lossProbe?.cancel()
+            lossProbe = null
+            lossGeneration++
+            lossWindow.clear()
+            timedPings.clear()
+            linkEvidenceVersion++
+            qualityDirty = true
+            lossRunning = true
+            lossStatus = "$target · 正在探测…"
+            publishUiState(immediate = true)
+            sampleLoss()
+        },
+        onStopLoss = {
+            stopLoss("已停止 · 保留最后结果")
+            publishUiState()
+        },
+        onToggleRfMonitor = { enabled -> setRfMonitoringEnabled(enabled) },
+        onRequestRfPermissions = {
+            rfPermissionLauncher.launch(RfCellularCollector.REQUIRED_PERMISSIONS)
+        },
+        onResetRfMonitor = {
+            rfEngine.reset()
+            rfStatusOverride = null
+            publishUiState()
+        },
+        onRequestUsageAccess = {
+            try {
+                startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS, Uri.parse("package:$packageName")))
+            } catch (_: Exception) {
+                startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+            }
+        },
+        onRefreshUsage = { loadUsage() },
+        onRunActivePrivacy = { runActivePrivacyInspection() },
+        onUpdateExpectProxy = { expect ->
+            updatePrefs(uiPrefs.copy(expectProxy = expect))
+        },
+        onUpdateUploadThresholdKib = { kib ->
+            updatePrefs(uiPrefs.copy(uploadThresholdKib = kib))
+        },
+        onRunHttpsProbe = { runHttpsProbe() },
+        onRefreshSystemNetwork = { refreshSystemNetwork() },
+        onRunEnvironmentCheck = { runEnvironmentCheck() },
+        onGeneratePrivacyJson = { generatePrivacyJson() },
+        onShareTextReport = { shareTextReport() },
+        onShareJsonReport = {
+            val json = generatePrivacyJson()
+            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                type = "application/json"
+                putExtra(Intent.EXTRA_TEXT, json)
+            }, "分享隐私 JSON 证据报告"))
+        },
+        onPickDatabase = { openDbLauncher.launch(arrayOf("*/*")) },
+        onSelectHistorySession = { session ->
+            uiState = uiState.copy(selectedHistorySession = session, historyReportMarkdown = "")
+        },
+        onGenerateHistoryReport = { generateHistoryReport() },
+        onShareHistoryReport = {
+            val report = uiState.historyReportMarkdown
+            if (report.isNotBlank()) {
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, report)
+                }, "分享历史会话诊断报告"))
+            }
+        },
+        onScanControllers = { scanLocalControllers() },
+        onConnectDiscovered = { discovered ->
+            if (discovered.requiresAuth) {
+                controller = discovered.address
+                uiState = uiState.copy(controllerAddress = controller, showControllerDialog = true)
+            } else {
+                saveControllerConfig(discovered.address, "")
+            }
+        },
+        onSaveController = { addr, newSecret -> saveControllerConfig(addr, newSecret) },
+        onDisconnectController = { disconnectController() },
+        onSaveExits = { selected -> saveExits(selected) },
+        onTogglePulseAnimation = { enabled -> updatePrefs(uiPrefs.copy(pulseAnimation = enabled)) },
+        onChangePerformanceMode = { mode ->
+            updatePrefs(uiPrefs.copy(performanceMode = mode))
+            rfCollector?.updateCadence(mode.rfSteadyPollMs, mode.rfEscalatedPollMs)
+            if (foreground) {
+                handler.removeCallbacks(tick)
+                handler.post(tick)
+            }
+        },
+        onChangeThemeMode = { mode -> updatePrefs(uiPrefs.copy(themeMode = mode)) },
+        onToggleDynamicColor = { enabled -> updatePrefs(uiPrefs.copy(dynamicColor = enabled)) },
+        onSetControllerDialog = { open -> uiState = uiState.copy(showControllerDialog = open) },
+        onSetExitsDialog = { open -> uiState = uiState.copy(showExitsDialog = open) },
+        onSetScopeDialog = { open -> uiState = uiState.copy(showScopeDialog = open) },
+        onDismissBanner = { id -> dismissTopBanner(id) }
+    )
+
+    private fun showTopBanner(
+        title: String,
+        detail: String? = null,
+        tone: BannerTone = BannerTone.ERROR,
+        durationMs: Long = 4500L
+    ) {
+        val msg = TopBannerMessage(
+            id = ++bannerSeq,
+            title = title,
+            detail = detail,
+            tone = tone,
+            durationMs = durationMs
+        )
+        uiState = uiState.copy(topBanner = msg)
+    }
+
+    private fun dismissTopBanner(id: Long) {
+        if (uiState.topBanner?.id == id) {
+            uiState = uiState.copy(topBanner = null)
+        }
     }
 
     private val tick = object : Runnable {
         override fun run() {
             if (!foreground) return
-            if (!paused) {
-                lastRx = TrafficStats.getTotalRxBytes(); lastTx = TrafficStats.getTotalTxBytes()
-                lastRate = rates.accept(CounterSample(SystemClock.elapsedRealtime(), lastRx, lastTx))
-                appendSample(trend, lastRate)
-                sampledAt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.ROOT).format(Date())
+            val nowMs = SystemClock.elapsedRealtime()
+            val tab = uiState.activeTab
+            val mode = uiPrefs.performanceMode
+            val isIdleTab = tab == WieslerTab.SETTINGS || tab == WieslerTab.HISTORY
+
+            // 仅在展示流量趋势的页面采 TrafficStats，并把系统计数读取移至后台线程，消除主线程 IPC 抖动。
+            // Sample TrafficStats off the main thread and only on tabs that surface live traffic rates.
+            val needsTraffic = !paused && (tab == WieslerTab.HOME || tab == WieslerTab.MONITOR || tab == WieslerTab.HISTORY)
+            if (needsTraffic && !trafficSampleInFlight && nowMs - lastTrafficSampleAtMs >= mode.activeTickMs - 100L) {
+                trafficSampleInFlight = true
+                lastTrafficSampleAtMs = nowMs
+                worker.execute {
+                    val rx = android.net.TrafficStats.getTotalRxBytes()
+                    val tx = android.net.TrafficStats.getTotalTxBytes()
+                    val sampledElapsed = SystemClock.elapsedRealtime()
+                    handler.post {
+                        trafficSampleInFlight = false
+                        if (isDestroyed || !foreground || paused) return@post
+                        lastRx = rx
+                        lastTx = tx
+                        lastRate = rates.accept(CounterSample(sampledElapsed, rx, tx))
+                        appendSample(trend, lastRate)
+                        sampledAt = sampleDateFmt.format(Date())
+                        historyDirty = true
+                        if (uiState.activeTab == WieslerTab.HOME) qualityDirty = true
+                        publishUiState(immediate = false)
+                    }
+                }
             }
-            updateOverview()
-            if (page == 4 && !studio.live) sampleDemo()
-            if (controllerEnabled && (forwardEnabled || page == 2 || (page == 4 && studio.live)) && !controllerBusy) fetchConnections()
-            if (SystemClock.elapsedRealtime() - lastPersistedAt >= 5000) persistState()
-            handler.postDelayed(this, 1000)
+
+            if (!capturePaused) {
+                if (tab == WieslerTab.GRAPH && !studio.live) {
+                    sampleDemo()
+                    publishUiState(immediate = false)
+                }
+                val wantsController = forwardEnabled || tab in setOf(
+                    WieslerTab.HOME, WieslerTab.GRAPH, WieslerTab.MONITOR, WieslerTab.PRIVACY
+                )
+                val controllerIntervalMs = when {
+                    controllerBackoffMs > 0L -> controllerBackoffMs
+                    forwardEnabled || tab == WieslerTab.GRAPH || tab == WieslerTab.MONITOR -> mode.activeTickMs
+                    else -> mode.overviewControllerMs
+                }
+                if (controllerEnabled && wantsController && !controllerBusy &&
+                    !(tab == WieslerTab.GRAPH && !studio.live && !forwardEnabled) &&
+                    (nowMs - lastControllerFetchAtMs >= controllerIntervalMs - 100L)
+                ) {
+                    fetchConnections()
+                }
+            }
+
+            // 历史曲线与请求日志改为脏标记 + 30 秒落盘，减少每 5 秒重写 SharedPreferences 的闪存 I/O。
+            // Persist history only when dirty on a 30s cadence (onPause still flushes immediately).
+            if (historyDirty && nowMs - lastPersistedAt >= 30_000L) {
+                persistState(async = true)
+            }
+
+            val nextDelayMs = when {
+                isIdleTab && !forwardEnabled && !needsTraffic -> 4_000L
+                !forwardEnabled && paused && (tab == WieslerTab.HOME || tab == WieslerTab.PRIVACY) -> mode.overviewControllerMs
+                else -> mode.activeTickMs
+            }
+            handler.postDelayed(this, nextDelayMs)
         }
     }
 
-    private fun persistState() {
-        val history = SavedHistory(trend.toList(), forwardTrend.toList(), forwardRates.observedRx,
-            forwardRates.observedTx, requestLogs.toList(), sampledAt, forwardSampledAt)
-        getPreferences(0).edit().putBoolean("studioAvailable", true).putInt("page", page).putBoolean("paused", paused)
-            .putBoolean("forwardEnabled", forwardEnabled).putStringSet("overseasExits", overseasExits)
-            .putString("history", history.encode()).apply()
+    private fun updatePrefs(next: AppUiPreferences) {
+        uiPrefs = next
+        AppUiPreferencesStore.write(getPreferences(0), next)
+        publishUiState(immediate = true)
+    }
+
+    private fun persistState(async: Boolean = true) {
+        val history = SavedHistory(
+            trend.toList(),
+            forwardTrend.toList(),
+            forwardRates.observedRx,
+            forwardRates.observedTx,
+            requestLogs.toList(),
+            sampledAt,
+            forwardSampledAt
+        )
+        val tabIndex = uiState.activeTab.index
+        val isPaused = paused
+        val isForward = forwardEnabled
+        val exitsCopy = overseasExits.toSet()
         lastPersistedAt = SystemClock.elapsedRealtime()
+        historyDirty = false
+        val writeAction = {
+            val encoded = history.encode()
+            getPreferences(0).edit()
+                .putBoolean("studioAvailable", true)
+                .putInt("ui_tab", tabIndex)
+                .putBoolean("paused", isPaused)
+                .putBoolean("forwardEnabled", isForward)
+                .putStringSet("overseasExits", exitsCopy)
+                .putString("history", encoded)
+                .apply()
+        }
+        if (async && !worker.isShutdown) {
+            worker.execute(writeAction)
+        } else {
+            writeAction()
+        }
     }
 
     private fun appendSample(samples: MutableList<Rate?>, rate: Rate?) {
@@ -228,209 +700,626 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
-    private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-    private fun row() = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-    private fun shape(color: Int, radius: Int = 18) = GradientDrawable().apply {
-        setColor(color); cornerRadius = dp(radius).toFloat()
-        if (color == surface) setStroke(dp(1), line)
-    }
-    private fun label(value: String, size: Int = 14, color: Int = ink, bold: Boolean = false) = TextView(this).apply {
-        text = value; textSize = size.toFloat(); setTextColor(color)
-        if (bold) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        setLineSpacing(dp(3).toFloat(), 1f)
-    }
-    private fun gap(parent: LinearLayout = body, size: Int = 16) { parent.addView(View(this), LinearLayout.LayoutParams(1, dp(size))) }
-    private fun card(parent: LinearLayout = body): LinearLayout = column().apply {
-        background = shape(surface); setPadding(dp(18), dp(18), dp(18), dp(18))
-        parent.addView(this, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) })
-    }
-    private fun button(text: String, primary: Boolean = false, action: () -> Unit) = TextView(this).apply {
-        this.text = text; textSize = 14f; gravity = Gravity.CENTER
-        setTextColor(if (primary) bg else mint); background = shape(if (primary) mint else Color.rgb(34, 51, 48), 12)
-        setPadding(dp(16), dp(13), dp(16), dp(13)); minHeight = dp(48)
-        isClickable = true; isFocusable = true; setOnClickListener { action() }
-    }
-    private fun heading(kicker: String, title: String, subtitle: String) {
-        body.addView(label(title, 30, ink, true)); gap(size = 5)
-        body.addView(label(subtitle, 14, muted)); gap(size = 24)
-    }
-    private fun render() {
-        body.removeAllViews(); nav.removeAllViews()
-        studioPanel = null
-        body.setPadding(dp(if (page == 4) 16 else 22), dp(12), dp(if (page == 4) 16 else 22), dp(20))
-        download = null; upload = null; chart = null; status = null; networkText = null; totalText = null
-        forwardChart = null; forwardMetrics = null; forwardUpload = null; forwardStatus = null; forwardTotal = null
-        usageRows = null; connectionRows = null; controllerStatus = null; probeLabel = null
-        requestLogRows = null; lossLabel = null; lossStatusLabel = null
-        listOf(4 to "图谱", 0 to "概览", 1 to "应用", 2 to "连接", 3 to "诊断").forEach { (index, title) ->
-            nav.addView(label(title, 13, if (page == index) mint else muted, page == index).apply {
-                gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(8)); minHeight = dp(56)
-                if (page == index) background = shape(Color.rgb(34, 51, 48), 14)
-                isClickable = true; isFocusable = true
-                setOnClickListener { page = index; render(); scroll.scrollTo(0, 0); persistState() }
-            }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(3); marginEnd = dp(3) })
-        }
-        when (page) { 0 -> showOverview(); 1 -> showApps(); 2 -> showConnections(); 3 -> showDiagnostics(); 4 -> showStudio() }
-    }
-
     private fun sampleDemo() {
-        studio.accept(studioDemo(demoTick++), SystemClock.elapsedRealtime(), System.currentTimeMillis())
-        studioPanel?.refresh(animate = true)
+        val flows = studioDemo(demoTick++)
+        val downSum = flows.sumOf { it.download.coerceAtLeast(0) }
+        val upSum = flows.sumOf { it.upload.coerceAtLeast(0) }
+        studio.accept(flows, SystemClock.elapsedRealtime(), System.currentTimeMillis(), downloadTotal = downSum, uploadTotal = upSum)
     }
 
-    private fun showStudio() {
-        if (!studio.live && studio.frames.isEmpty()) sampleDemo()
-        studioPanel = StudioPanel(this, studio, ::configureController) {
-            if (studio.live) {
-                if (controllerEnabled && !controllerBusy) fetchConnections()
-            } else { demoTick = 0; sampleDemo() }
+    private fun saveControllerConfig(address: String, enteredSecret: String): String? {
+        val changedController = controller != address
+        val effectiveSecret = if (enteredSecret.isEmpty() && !changedController) secret else enteredSecret
+        val saved = runCatching {
+            ControllerSecretStore(getPreferences(0)).save(address, effectiveSecret, true)
+        }.onFailure { err ->
+            Log.w("Wiesler", "Failed to persist controller secret for $address: ${err.javaClass.simpleName}: ${err.message}")
+        }.getOrDefault(false)
+        if (!saved) {
+            showTopBanner("保存控制器设置失败", "Keystore 写入异常，请重试", BannerTone.ERROR)
+            return "无法安全保存连接设置，请重试"
         }
-        body.addView(studioPanel)
-        studioPanel?.updateStatus(connectionState)
+        controller = address
+        secret = effectiveSecret
+        controllerEnabled = true
+        controllerHealthy = false
+        controllerBackoffMs = 0L
+        capturePaused = false
+        // 递增代际立即解除旧地址在途请求的阻塞，保证新地址立刻发起拉取并汇报结果。
+        // Bumping generation immediately unblocks a new fetch even if a stale request is still timing out.
+        controllerGeneration++
+        notifyNextControllerSuccess = true
+        notifyNextControllerError = true
+        if (studio.live) {
+            studio.switchSource(false)
+            studio.switchSource(true)
+        }
+        if (changedController) {
+            overseasExits = emptySet()
+            studio.overseasExits = emptySet()
+        }
+        resetForward(clearHistory = changedController)
+        getPreferences(0).edit()
+            .putString("controller", controller)
+            .putStringSet("overseasExits", overseasExits)
+            .apply()
+        availableExitsCache = emptyList()
+        connectionState = "连接中…"
+        persistState()
+        publishUiState()
+        fetchConnections()
+        refreshEgress()
+        return null
     }
 
-    private fun showOverview() {
-        heading("YOUR NETWORK, IN FOCUS", "手机网络", "此刻的流量与连接")
-        val graphCard = card()
-        graphCard.addView(monitorSwitch("全局流量", !paused) { enabled ->
-            paused = !enabled; rates.reset(); lastRate = null; appendSample(trend, null); updateOverview(); persistState()
-        })
-        val metrics = row()
-        download = label("—", 18, mint, true); upload = label("—", 18, violet, true)
-        metrics.addView(download, LinearLayout.LayoutParams(0, -2, 1f)); metrics.addView(upload, LinearLayout.LayoutParams(0, -2, 1f))
-        graphCard.addView(metrics)
-        chart = TrendView(this, trend); graphCard.addView(chart, LinearLayout.LayoutParams(-1, dp(120)))
-        status = label("", 13, muted); graphCard.addView(status)
-
-        val forwardCard = card()
-        forwardCard.addView(monitorSwitch("海外转发流量", forwardEnabled) { enabled ->
-            forwardEnabled = enabled; controllerGeneration++; resetForward(); updateOverview(); persistState()
-        })
-        val forwardValues = row()
-        forwardMetrics = label("↓ —", 18, mint, true); forwardUpload = label("↑ —", 18, violet, true)
-        forwardValues.addView(forwardMetrics, LinearLayout.LayoutParams(0, -2, 1f))
-        forwardValues.addView(forwardUpload, LinearLayout.LayoutParams(0, -2, 1f))
-        forwardCard.addView(forwardValues)
-        forwardChart = TrendView(this, forwardTrend); forwardCard.addView(forwardChart, LinearLayout.LayoutParams(-1, dp(120)))
-        forwardStatus = label("", 13, muted); forwardCard.addView(forwardStatus)
-        forwardTotal = label("", 13, muted); forwardCard.addView(forwardTotal); gap(forwardCard, 10)
-        val actions = row()
-        actions.addView(button("控制器") { configureController() }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
-        actions.addView(button("海外出口") { configureExits() }, LinearLayout.LayoutParams(0, -2, 1f))
-        forwardCard.addView(actions)
-        gap(forwardCard, 8)
-        forwardCard.addView(button("查看转发连接") { routeFilter = TrafficRoute.OVERSEAS; page = 2; render(); scroll.scrollTo(0, 0) })
-        showPacketLoss()
-        val networkCard = card()
-        networkCard.addView(label("当前网络", 14, muted)); gap(networkCard, 8)
-        networkText = label("读取中", 18, ink, true); networkCard.addView(networkText)
-        gap(networkCard, 14); totalText = label("", 14, muted); networkCard.addView(totalText)
-        networkCard.setOnClickListener { showScope() }
-        updateOverview()
-    }
-
-    private fun monitorSwitch(title: String, checked: Boolean, change: (Boolean) -> Unit) = Switch(this).apply {
-        text = title; textSize = 17f; setTextColor(ink); minHeight = dp(48)
-        isChecked = checked; setOnCheckedChangeListener { _, value -> change(value) }
-    }
-
-    private fun routedCounter(item: JSONObject): RoutedCounter = RoutedCounter(
-        item.optString("id"), item.optString("start"),
-        item.optJSONArray("chains")?.optString(0)?.takeIf { it.isNotBlank() },
-        item.optLong("download", -1), item.optLong("upload", -1)
-    )
-
-    private fun configureExits() {
-        val candidates = (connections.mapNotNull { routedCounter(it).exit }.filter(::eligibleExit) + overseasExits).distinct().sorted()
-        val selected = overseasExits.toMutableSet()
-        val dialog = AlertDialog.Builder(this).setTitle("选择海外出口节点")
-        if (candidates.isEmpty()) dialog.setMessage("先连接控制器并访问海外服务，或手动填写实际出口节点名称。")
-        else dialog.setMultiChoiceItems(candidates.toTypedArray(), candidates.map { it in selected }.toBooleanArray()) { _, index, checked ->
-                if (checked) selected.add(candidates[index]) else selected.remove(candidates[index])
-            }
-        dialog.setPositiveButton("保存") { _, _ -> saveExits(selected) }
-            .setNeutralButton("手动填写") { _, _ ->
-                val input = EditText(this).apply {
-                    setText(overseasExits.joinToString("\n")); hint = "每行一个实际出口节点名称"; minLines = 3
-                    setPadding(dp(24), dp(12), dp(24), dp(12))
-                }
-                AlertDialog.Builder(this).setTitle("海外出口节点名称").setView(input)
-                    .setPositiveButton("保存") { _, _ -> saveExits(input.text.lines().map { it.trim() }.filter(::eligibleExit).toSet()) }
-                    .setNegativeButton("取消", null).show()
-            }.setNegativeButton("取消", null).show()
+    private fun disconnectController() {
+        if (!runCatching { ControllerSecretStore(getPreferences(0)).save(controller, "", false) }.getOrDefault(false)) {
+            showTopBanner("断开设置保存失败", "无法清除本地凭证，请重试", BannerTone.ERROR)
+            return
+        }
+        controllerGeneration++
+        controllerEnabled = false
+        controllerHealthy = false
+        notifyNextControllerSuccess = false
+        notifyNextControllerError = false
+        secret = ""
+        availableExitsCache = emptyList()
+        connectionState = "已断开"
+        resetForward()
+        appendSample(mihomoTrend, null)
+        if (studio.live) {
+            studio.now()
+            studio.accept(emptyList(), SystemClock.elapsedRealtime(), System.currentTimeMillis(), connectionState)
+        }
+        persistState()
+        publishUiState()
     }
 
     private fun saveExits(selected: Set<String>) {
         if (selected == overseasExits) return
         overseasExits = selected.toSet()
+        studio.overseasExits = overseasExits
         getPreferences(0).edit().putStringSet("overseasExits", overseasExits).apply()
-        controllerGeneration++; resetForward(clearHistory = true); render()
+        controllerGeneration++
+        resetForward(clearHistory = true)
         persistState()
+        publishUiState()
     }
 
-    private fun bytes(value: Double): String {
-        if (!value.isFinite() || value < 0) return "—"
-        val units = arrayOf("B", "KB", "MB", "GB", "TB")
-        var n = value; var i = 0
-        while (n >= 1024 && i < 4) { n /= 1024; i++ }
-        return if (i == 0) "${n.toLong()} ${units[i]}" else String.format(Locale.ROOT, "%.1f %s", n, units[i])
-    }
-    private fun networkSummary(): String {
-        val active = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
-        // 按默认网络识别上网类型，排除热点局域网。 / Use the default route, not hotspot interfaces.
-        val transport = when {
-            active?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "Wi-Fi"
-            active?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "移动网络"
-            active?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "以太网"
-            active != null -> "网络已连接"
-            else -> "未连接网络"
+    private fun scanLocalControllers() {
+        if (uiState.discoveringControllers) return
+        uiState = uiState.copy(
+            discoveringControllers = true,
+            discoveryFailed = false,
+            discoveryStatus = "正在并发扫描 ${ControllerDiscovery.DEFAULT_PORTS.size} 个常用回环端口…"
+        )
+        val extras = listOf(controller)
+        worker.execute {
+            val report = ControllerDiscovery.scanLocal(extras)
+            handler.post {
+                if (isDestroyed) return@post
+                val failed = report.controllers.isEmpty()
+                val msg = when {
+                    failed -> report.failureSummary()
+                    report.controllers.size == 1 -> "发现 1 个控制器（扫描 ${report.scannedPorts} 端口），可点击右侧直接连接"
+                    else -> "发现 ${report.controllers.size} 个控制器，请选择其中一个连接"
+                }
+                if (failed) {
+                    Log.w("Wiesler", "Local controller scan found none (${report.scannedPorts} ports): $msg")
+                    appendRequestLog("本机端口扫描 (${report.scannedPorts})", null, msg)
+                    showTopBanner("未发现可用本机控制器", msg, BannerTone.ERROR, durationMs = 5500L)
+                } else {
+                    val foundList = report.controllers.joinToString("、") { it.address.removePrefix("http://") }
+                    showTopBanner(
+                        title = "发现 ${report.controllers.size} 个本机控制器",
+                        detail = foundList,
+                        tone = BannerTone.SUCCESS,
+                        durationMs = 3600L
+                    )
+                }
+                uiState = uiState.copy(
+                    discoveringControllers = false,
+                    discoveredControllers = report.controllers,
+                    discoveryStatus = msg,
+                    discoveryFailed = failed
+                )
+            }
         }
-        val vpn = active?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
-        return transport + if (vpn) "  /  VPN 已启用" else ""
     }
-    private fun updateOverview() {
-        download?.text = "↓ " + (lastRate?.let { bytes(it.rx) + "/s" } ?: "—")
-        upload?.text = "↑ " + (lastRate?.let { bytes(it.tx) + "/s" } ?: "—")
-        status?.text = if (paused) "监控已关闭" else "最近 60 次采样 · $sampledAt"
-        forwardMetrics?.text = "↓ " + (forwardRate?.let { bytes(it.rx) + "/s" } ?: "—")
-        forwardUpload?.text = "↑ " + (forwardRate?.let { bytes(it.tx) + "/s" } ?: "—")
-        forwardStatus?.text = forwardState
-        forwardTotal?.text = "已观测 ↓ ${bytes(forwardRates.observedRx)}  ↑ ${bytes(forwardRates.observedTx)}"
-        forwardChart?.invalidate()
-        networkText?.text = networkSummary()
-        totalText?.text = "本次开机累计\n↓ ${bytes(lastRx.toDouble())}    ↑ ${bytes(lastTx.toDouble())}"
-        chart?.invalidate()
+
+    private fun fetchConnections() {
+        if (!foreground || !controllerEnabled || controllerBusy || capturePaused) return
+        val generation = controllerGeneration
+        inFlightControllerGeneration = generation
+        lastControllerFetchAtMs = SystemClock.elapsedRealtime()
+        val address = controller
+        val token = secret
+        worker.execute {
+            var httpStatus: Int? = null
+            val result = runCatching {
+                val connection = URL("$address/connections").openConnection(Proxy.NO_PROXY) as HttpURLConnection
+                var keepAliveSafe = false
+                try {
+                    connection.connectTimeout = 2500
+                    connection.readTimeout = 2500
+                    connection.instanceFollowRedirects = false
+                    connection.useCaches = false
+                    if (token.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $token")
+                    val code = connection.responseCode
+                    httpStatus = code.takeIf { it in 100..599 }
+                    if (code == 401 || code == 403) error("鉴权失败，请检查 Secret")
+                    if (code != 200) error("控制器返回 HTTP $code")
+                    // 使用原生 JsonReader 单遍流式解析连接，避免多 MB 字符串与 JSONObject DOM 树堆分配，同时复用 Keep-Alive 连接。
+                    // Stream-parse /connections with JsonReader to cut heap churn and keep HTTP/1.1 keep-alive sockets reusable.
+                    val parsed = connection.inputStream.use { stream ->
+                        ConnectionsStreamParser.parse(stream)
+                    }
+                    keepAliveSafe = true
+                    ParsedConnectionsSnapshot(
+                        time = SystemClock.elapsedRealtime(),
+                        flows = parsed.flows,
+                        counters = parsed.counters,
+                        exits = parsed.exits,
+                        downTotal = parsed.downTotal,
+                        upTotal = parsed.upTotal
+                    )
+                } finally {
+                    if (!keepAliveSafe) connection.disconnect()
+                }
+            }
+            handler.post {
+                if (inFlightControllerGeneration == generation) inFlightControllerGeneration = null
+                if (isDestroyed || !foreground || generation != controllerGeneration) return@post
+                result.fold(
+                    onSuccess = { snapshot ->
+                        val healthChanged = !controllerHealthy
+                        controllerHealthy = true
+                        controllerBackoffMs = 0L
+                        lastControllerErrorMessage = null
+                        availableExitsCache = snapshot.exits
+                        if (healthChanged) linkEvidenceVersion++
+                        if (studio.live) {
+                            studio.accept(
+                                flows = snapshot.flows,
+                                time = snapshot.time,
+                                wallTime = System.currentTimeMillis(),
+                                downloadTotal = snapshot.downTotal,
+                                uploadTotal = snapshot.upTotal
+                            )
+                            val rxT = studio.frames.lastOrNull()?.rxTotal
+                            val txT = studio.frames.lastOrNull()?.txTotal
+                            appendSample(mihomoTrend, if (rxT != null && txT != null) Rate(rxT, txT) else null)
+                        }
+                        forwardSampledAt = sampleDateFmt.format(Date())
+                        connectionState = "已连接 · HTTP $httpStatus · ${snapshot.flows.size} 条连接 · $forwardSampledAt"
+                        appendRequestLog("Mihomo /connections", httpStatus, null)
+                        historyDirty = true
+                        if (notifyNextControllerSuccess) {
+                            notifyNextControllerSuccess = false
+                            notifyNextControllerError = false
+                            showTopBanner(
+                                title = "控制器已连接",
+                                detail = "${address.removePrefix("http://")} · 当前 ${snapshot.flows.size} 条活跃连接",
+                                tone = BannerTone.SUCCESS,
+                                durationMs = 3200L
+                            )
+                        } else {
+                            notifyNextControllerError = false
+                        }
+                        if (forwardEnabled) {
+                            forwardRate = forwardRates.accept(snapshot.time, snapshot.counters, overseasExits)
+                            appendSample(forwardTrend, forwardRate)
+                            val count = snapshot.counters.count { trafficRoute(it.exit, overseasExits) == TrafficRoute.OVERSEAS }
+                            forwardState = when {
+                                overseasExits.isEmpty() -> "请选择海外出口"
+                                count == 0 && snapshot.flows.isNotEmpty() -> "所选出口未匹配当前连接，请核对节点名称"
+                                forwardRate == null -> "等待连续采样 · $forwardSampledAt"
+                                else -> "$count 条转发连接 · $forwardSampledAt"
+                            }
+                        }
+                    },
+                    onFailure = { err ->
+                        val wasHealthy = controllerHealthy
+                        controllerHealthy = false
+                        // 控制器不可达时按 2s → 4s → 8s → 15s 指数退避，避免离线/关闭代理时持续高频空转重连。
+                        // Exponential backoff (2s..15s) when controller is unreachable to avoid hot retry loops.
+                        controllerBackoffMs = if (controllerBackoffMs == 0L) 2_000L else (controllerBackoffMs * 2L).coerceAtMost(15_000L)
+                        availableExitsCache = emptyList()
+                        val rawMessage = when (err) {
+                            is java.net.ConnectException -> "无法连接，请确认手机控制器已开启"
+                            is java.net.SocketTimeoutException -> "连接超时，正在重试"
+                            is IllegalStateException -> err.message ?: "快照无效"
+                            else -> "读取失败：${err.message?.take(60) ?: "请检查地址、网络与证书"}"
+                        }
+                        Log.w("Wiesler", "Controller /connections failed ($address, http=$httpStatus): ${err.javaClass.simpleName}: ${err.message}")
+                        lastControllerErrorAtMs = System.currentTimeMillis()
+                        lastControllerErrorMessage = rawMessage
+                        linkEvidenceVersion++
+                        appendRequestLog("Mihomo /connections", httpStatus, rawMessage)
+                        historyDirty = true
+                        connectionState = "${httpStatus?.let { "HTTP $it" } ?: "未取得状态码"} · $rawMessage"
+                        if (notifyNextControllerError || wasHealthy) {
+                            notifyNextControllerSuccess = false
+                            notifyNextControllerError = false
+                            showTopBanner(
+                                title = "控制器连接失败",
+                                detail = "${address.removePrefix("http://")} · $rawMessage",
+                                tone = BannerTone.ERROR,
+                                durationMs = 5000L
+                            )
+                        }
+                        appendSample(mihomoTrend, null)
+                        if (studio.live) {
+                            studio.accept(emptyList(), SystemClock.elapsedRealtime(), System.currentTimeMillis(), connectionState)
+                        }
+                        resetForward()
+                        if (forwardEnabled) forwardState = connectionState
+                    }
+                )
+                if (uiState.activeTab == WieslerTab.HOME) qualityDirty = true
+                publishUiState(immediate = false)
+            }
+        }
+    }
+
+    private fun refreshEgress() {
+        val token = ++egressGeneration
+        val useController = controllerEnabled
+        val addr = controller
+        val sec = secret
+        uiState = uiState.copy(egress = uiState.egress.copy(busy = true))
+        worker.execute {
+            val sysResult = EgressProbe.measure(proxyPort = null)
+            val proxyResult: Result<EgressAddress> = if (useController) {
+                EgressProbe.fetchMihomoProxyPort(addr, sec).fold(
+                    onSuccess = { port -> EgressProbe.measure(proxyPort = port) },
+                    onFailure = { Result.failure(it) }
+                )
+            } else {
+                Result.failure(IllegalStateException("未连接控制器"))
+            }
+            handler.post {
+                if (isDestroyed || token != egressGeneration) return@post
+                linkEvidenceVersion++
+                qualityDirty = true
+                uiState = uiState.copy(
+                    egress = EgressUiState(
+                        busy = false,
+                        system = sysResult.getOrNull(),
+                        systemError = sysResult.exceptionOrNull()?.message,
+                        proxy = proxyResult.getOrNull(),
+                        proxyError = proxyResult.exceptionOrNull()?.message
+                    )
+                )
+                publishUiState(immediate = false)
+            }
+        }
+    }
+
+    private fun runActivePrivacyInspection() {
+        val token = ++privacyRunGeneration
+        val started = System.currentTimeMillis()
+        val useController = controllerEnabled
+        val addr = controller
+        val sec = secret
+        uiState = uiState.copy(activePrivacyBusy = true)
+        worker.execute {
+            val dnsResult = runCatching { collectActiveDnsInspection() }
+            val sysResult = EgressProbe.measure(proxyPort = null)
+            val proxyResult = if (useController) {
+                EgressProbe.fetchMihomoProxyPort(addr, sec).fold(
+                    onSuccess = { port -> EgressProbe.measure(proxyPort = port) },
+                    onFailure = { Result.failure(it) }
+                )
+            } else {
+                Result.failure(IllegalStateException("未连接控制器，代理出口未探测"))
+            }
+            handler.post {
+                if (isDestroyed || token != privacyRunGeneration) return@post
+                val run = ActivePrivacyRun(
+                    startedAt = started,
+                    dns = dnsResult.getOrNull(),
+                    dnsError = dnsResult.exceptionOrNull()?.message,
+                    systemEgress = sysResult.getOrNull(),
+                    systemError = sysResult.exceptionOrNull()?.message,
+                    proxyEgress = proxyResult.getOrNull(),
+                    proxyError = proxyResult.exceptionOrNull()?.message
+                )
+                if (dnsResult.isSuccess) lastDnsInspection = dnsResult.getOrNull()
+                linkEvidenceVersion++
+                qualityDirty = true
+                uiState = uiState.copy(
+                    activePrivacyBusy = false,
+                    activePrivacyRun = run,
+                    egress = EgressUiState(
+                        busy = false,
+                        system = sysResult.getOrNull() ?: uiState.egress.system,
+                        systemError = sysResult.exceptionOrNull()?.message,
+                        proxy = proxyResult.getOrNull() ?: uiState.egress.proxy,
+                        proxyError = proxyResult.exceptionOrNull()?.message
+                    )
+                )
+                publishUiState()
+            }
+        }
+    }
+
+    private fun collectActiveDnsInspection(): ActiveDnsInspection {
+        val active = connectivity.activeNetwork
+        val caps = connectivity.getNetworkCapabilities(active)
+        val props = connectivity.getLinkProperties(active)
+        val dnsServers = props?.dnsServers?.mapNotNull { it.hostAddress }.orEmpty()
+        val domain = "example.com"
+        val start = SystemClock.elapsedRealtime()
+        val resolved = runCatching {
+            InetAddress.getAllByName(domain).mapNotNull { it.hostAddress }.distinct()
+        }
+        val elapsed = SystemClock.elapsedRealtime() - start
+        return ActiveDnsInspection(
+            interfaceName = props?.interfaceName,
+            isVpn = caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true,
+            mtu = props?.mtu?.takeIf { it > 0 },
+            privateDnsActive = props?.isPrivateDnsActive == true,
+            privateDnsServer = props?.privateDnsServerName,
+            dnsServers = dnsServers,
+            probeDomain = domain,
+            resolvedAddresses = resolved.getOrDefault(emptyList()),
+            probeElapsedMs = elapsed,
+            probeError = resolved.exceptionOrNull()?.message
+        )
+    }
+
+    private fun runEnvironmentCheck() {
+        val locales = resources.configuration.locales
+        val languages = (0 until locales.size()).map { locales[it].toLanguageTag() }
+        val dm = resources.displayMetrics
+        val props = connectivity.getLinkProperties(connectivity.activeNetwork)
+        val privateDns = if (props?.isPrivateDnsActive == true) {
+            "已启用${props.privateDnsServerName?.let { "（$it）" } ?: ""}"
+        } else "未启用"
+        uiState = uiState.copy(
+            deviceEnvironment = DeviceEnvironmentInfo(
+                languages = languages,
+                timezone = TimeZone.getDefault().id,
+                screenSummary = "${dm.widthPixels} × ${dm.heightPixels} · ${dm.densityDpi} dpi",
+                androidVersion = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
+                privateDnsSummary = privateDns
+            )
+        )
+    }
+
+    private fun generatePrivacyJson(): String {
+        val policy = PrivacyPolicy(uiPrefs.expectProxy, uiPrefs.uploadThresholdKib.toLong() * 1024L)
+        val report = PrivacyInspector.analyze(studio.current, policy, if (studio.live) "mihomo" else "demo")
+        val summary = PrivacyInspector.summarize(report)
+        val json = PrivacyInspector.exportJson(
+            report,
+            summary,
+            uiState.activePrivacyRun,
+            uiState.deviceEnvironment,
+            evaluateRfSnapshot()
+        )
+        uiState = uiState.copy(exportedPrivacyJson = json)
+        return json
+    }
+
+    private fun registerDefaultNetworkMonitor() {
+        if (defaultNetworkCallback != null) return
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                refreshSystemProbesAsync()
+            }
+
+            override fun onLost(network: Network) {
+                refreshSystemProbesAsync()
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                refreshSystemProbesAsync(capsHint = networkCapabilities)
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                refreshSystemProbesAsync(propsHint = linkProperties)
+            }
+        }
+        runCatching {
+            connectivity.registerDefaultNetworkCallback(cb)
+            defaultNetworkCallback = cb
+        }.onFailure { err ->
+            Log.w("Wiesler", "registerDefaultNetworkCallback failed: ${err.message}")
+        }
+    }
+
+    private fun unregisterDefaultNetworkMonitor() {
+        val cb = defaultNetworkCallback ?: return
+        defaultNetworkCallback = null
+        runCatching { connectivity.unregisterNetworkCallback(cb) }
+    }
+
+    private fun refreshSystemProbesAsync(
+        capsHint: NetworkCapabilities? = null,
+        propsHint: LinkProperties? = null
+    ) {
+        if (worker.isShutdown) return
+        worker.execute {
+            val active = connectivity.activeNetwork
+            val caps = capsHint ?: connectivity.getNetworkCapabilities(active)
+            val props = propsHint ?: connectivity.getLinkProperties(active)
+            val (link, summary, diag) = buildSystemProbeBundle(active, caps, props)
+            handler.post {
+                if (isDestroyed || !foreground) return@post
+                val changed = link != cachedSystemLink || summary != cachedNetworkSummary || diag != cachedDiagnosticText
+                cachedSystemLink = link
+                cachedNetworkSummary = summary
+                cachedDiagnosticText = diag
+                lastSystemProbeAt = SystemClock.elapsedRealtime()
+                if (changed) {
+                    qualityDirty = true
+                    publishUiState(immediate = false)
+                }
+            }
+        }
+    }
+
+    private fun refreshSystemNetwork() {
+        refreshSystemProbes(force = true)
+        uiState = uiState.copy(
+            networkSummary = cachedNetworkSummary,
+            systemNetworkSnapshot = cachedDiagnosticText,
+            usageAllowed = cachedUsageAllowed
+        )
+    }
+
+    private fun refreshSystemProbes(force: Boolean = false) {
+        val now = SystemClock.elapsedRealtime()
+        // 已注册 DefaultNetworkCallback 推送时无需按秒轮询系统服务，仅在显式强制或超 15 秒兜底刷新。
+        // DefaultNetworkCallback pushes link changes; skip redundant main-thread Binder IPC unless forced or stale (>15s).
+        val staleWindowMs = if (defaultNetworkCallback != null) 15_000L else 5_000L
+        if (!force && now - lastSystemProbeAt < staleWindowMs && cachedDiagnosticText.isNotBlank()) return
+        lastSystemProbeAt = now
+        val active = connectivity.activeNetwork
+        val caps = connectivity.getNetworkCapabilities(active)
+        val props = connectivity.getLinkProperties(active)
+        val (link, summary, diag) = buildSystemProbeBundle(active, caps, props)
+        cachedSystemLink = link
+        cachedNetworkSummary = summary
+        cachedDiagnosticText = diag
+        cachedUsageAllowed = usageAllowed()
+    }
+
+    private fun buildSystemProbeBundle(
+        active: Network?,
+        caps: NetworkCapabilities?,
+        props: LinkProperties?
+    ): Triple<SystemLinkSnapshot, String, String> {
+        val link = buildSystemLinkSnapshot(active, caps, props)
+        val summary = link.transportLabel + if (link.isVpn) " / VPN 已启用" else ""
+        val privateDns = if (link.privateDnsActive) {
+            "已启用${link.privateDnsServer?.let { "（$it）" } ?: ""}"
+        } else "未启用"
+        val diag = "网络：$summary\n系统联网验证：${if (link.validated) "已通过" else "未通过 / 未知"}\n接口：${link.interfaceName ?: "未知"}\n本地地址：${props?.linkAddresses?.joinToString() ?: "未知"}\nDNS：${link.dnsServers.takeIf { it.isNotEmpty() }?.joinToString() ?: "未知"}\nPrivate DNS：$privateDns\nMTU：${link.mtu ?: "未知"}"
+        return Triple(link, summary, diag)
+    }
+
+    private fun buildSystemLinkSnapshot(
+        active: Network?,
+        caps: NetworkCapabilities?,
+        props: LinkProperties?
+    ): SystemLinkSnapshot {
+        if (active == null || caps == null) {
+            return SystemLinkSnapshot(connected = false, transportLabel = "未连接网络")
+        }
+        val isWifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+        val isCellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+        val isEthernet = caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+        val isVpn = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+        val transportLabel = when {
+            isWifi -> "Wi-Fi"
+            isCellular -> "移动网络"
+            isEthernet -> "以太网"
+            else -> "网络已连接"
+        }
+        val rssi = if (isWifi && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            caps.signalStrength.takeIf { it in -120..-20 }
+        } else {
+            null
+        }
+        return SystemLinkSnapshot(
+            connected = true,
+            transportLabel = transportLabel,
+            isWifi = isWifi,
+            isCellular = isCellular,
+            isEthernet = isEthernet,
+            isVpn = isVpn,
+            validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+            notMetered = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
+            wifiRssiDbm = rssi,
+            downstreamKbps = caps.linkDownstreamBandwidthKbps.takeIf { it > 0 },
+            upstreamKbps = caps.linkUpstreamBandwidthKbps.takeIf { it > 0 },
+            interfaceName = props?.interfaceName,
+            mtu = props?.mtu?.takeIf { it > 0 },
+            privateDnsActive = props?.isPrivateDnsActive == true,
+            privateDnsServer = props?.privateDnsServerName,
+            dnsServers = props?.dnsServers?.mapNotNull { it.hostAddress }.orEmpty()
+        )
+    }
+
+    private fun importDatabase(uri: Uri) {
+        val displayName = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        } ?: "wiesler.sqlite3"
+        uiState = uiState.copy(historyBusy = true, historyStatus = "正在校验并读取 $displayName…")
+        worker.execute {
+            val result = SqliteHistoryReader.importFromUri(applicationContext, uri, displayName)
+            handler.post {
+                if (isDestroyed) return@post
+                result.fold(
+                    onSuccess = { info ->
+                        uiState = uiState.copy(
+                            historyBusy = false,
+                            importedDb = info,
+                            selectedHistorySession = info.sessions.firstOrNull(),
+                            historyStatus = "已验证 Wiesler 证据库：${info.displayName}（${info.sessions.size} 个会话）",
+                            historyReportMarkdown = ""
+                        )
+                    },
+                    onFailure = { err ->
+                        uiState = uiState.copy(
+                            historyBusy = false,
+                            historyStatus = "读取失败：${err.message ?: "无效文件"}"
+                        )
+                    }
+                )
+            }
+        }
+    }
+
+    private fun generateHistoryReport() {
+        val db = uiState.importedDb ?: return
+        val session = uiState.selectedHistorySession ?: return
+        uiState = uiState.copy(historyBusy = true, historyStatus = "正在生成会话 ${session.sessionId} 诊断报告…")
+        worker.execute {
+            val result = SqliteHistoryReader.diagnoseSession(db.localPath, session)
+            handler.post {
+                if (isDestroyed) return@post
+                result.fold(
+                    onSuccess = { md ->
+                        uiState = uiState.copy(
+                            historyBusy = false,
+                            historyStatus = "诊断报告已生成",
+                            historyReportMarkdown = md
+                        )
+                    },
+                    onFailure = { err ->
+                        uiState = uiState.copy(
+                            historyBusy = false,
+                            historyStatus = "诊断生成失败：${err.message ?: "未知错误"}"
+                        )
+                    }
+                )
+            }
+        }
     }
 
     private fun usageAllowed(): Boolean {
         val ops = getSystemService(AppOpsManager::class.java)
         return ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName) == AppOpsManager.MODE_ALLOWED
     }
-    private fun showApps() {
-        if (page != 1) return
-        body.removeAllViews()
-        heading("APPLICATION ACTIVITY", "流量花在哪里", "今天 00:00 起 · Wi-Fi 与移动网络")
-        if (!usageAllowed()) {
-            val box = card(); box.addView(label("开启应用流量统计", 20, ink, true)); gap(box)
-            box.addView(label("授权使用情况访问后，查看各应用的下载、上传和流量排行。", 14, muted)); gap(box)
-            box.addView(button("前往系统授权", true) {
-                try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS, Uri.parse("package:$packageName"))) }
-                catch (_: Exception) { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
-            }); return
-        }
-        body.addView(button("刷新统计") { loadUsage() }); gap()
-        usageRows = column(); body.addView(usageRows)
-        loadUsage()
-    }
+
+    @Suppress("DEPRECATION")
     private fun loadUsage() {
         if (usageBusy || !usageAllowed()) return
         usageBusy = true
-        usageRows?.removeAllViews(); usageRows?.addView(label("正在读取系统账本…", 14, muted))
+        uiState = uiState.copy(usageBusy = true, usageError = null)
         worker.execute {
             val result = runCatching {
                 val stats = getSystemService(NetworkStatsManager::class.java)
-                val start = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
+                val start = Calendar.getInstance().apply {
+                    set(Calendar.HOUR_OF_DAY, 0)
+                    set(Calendar.MINUTE, 0)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }.timeInMillis
                 val totals = mutableMapOf<Int, LongArray>()
                 for (kind in listOf(ConnectivityManager.TYPE_WIFI, ConnectivityManager.TYPE_MOBILE)) {
                     stats.querySummary(kind, null, start, System.currentTimeMillis()).use { rows ->
@@ -438,372 +1327,542 @@ class MainActivity : Activity() {
                         while (rows.hasNextBucket()) {
                             rows.getNextBucket(bucket)
                             val entry = totals.getOrPut(bucket.uid) { longArrayOf(0, 0) }
-                            entry[0] += bucket.rxBytes; entry[1] += bucket.txBytes
+                            entry[0] += bucket.rxBytes
+                            entry[1] += bucket.txBytes
                         }
                     }
                 }
-                totals.entries.sortedByDescending { it.value[0] + it.value[1] }.filter { it.value.sum() > 0 }.map { entry ->
-                    val packages = packageManager.getPackagesForUid(entry.key)
-                    val title = packages?.firstOrNull()?.let { pkg -> runCatching {
-                        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
-                    }.getOrDefault(pkg) } ?: "系统 / UID ${entry.key}"
-                    Triple(title, entry.key, entry.value)
-                }
+                totals.entries
+                    .filter { it.value[0] + it.value[1] > 0 }
+                    .sortedByDescending { it.value[0] + it.value[1] }
+                    .map { entry ->
+                        val packages = packageManager.getPackagesForUid(entry.key)
+                        val title = packages?.firstOrNull()?.let { pkg ->
+                            runCatching {
+                                packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+                            }.getOrDefault(pkg)
+                        } ?: "系统 / UID ${entry.key}"
+                        AppUsageEntry(title, entry.key, entry.value[0], entry.value[1])
+                    }
             }
             handler.post {
                 usageBusy = false
-                if (isDestroyed || page != 1) return@post
-                usageRows?.removeAllViews()
-                result.fold(onSuccess = { entries ->
-                    if (entries.isEmpty()) usageRows?.addView(label("系统暂未提供今天的流量记录。", 14, muted))
-                    entries.forEachIndexed { index, entry ->
-                        val parent = usageRows ?: return@forEachIndexed
-                        val box = card(parent); val head = row()
-                        head.addView(label(String.format(Locale.ROOT, "%02d", index + 1), 12, mint), LinearLayout.LayoutParams(dp(34), -2))
-                        head.addView(label(entry.first, 16, ink, true), LinearLayout.LayoutParams(0, -2, 1f))
-                        head.addView(label(bytes(entry.third.sum().toDouble()), 14, mint)); box.addView(head); gap(box, 8)
-                        box.addView(label("↓ ${bytes(entry.third[0].toDouble())}    ↑ ${bytes(entry.third[1].toDouble())}", 14, muted))
-                        box.setOnClickListener { AlertDialog.Builder(this).setTitle(entry.first).setMessage("UID ${entry.second}\n系统统计可能延迟；共享 UID 合并显示。").setPositiveButton("知道了", null).show() }
+                if (isDestroyed) return@post
+                result.fold(
+                    onSuccess = { entries ->
+                        uiState = uiState.copy(usageBusy = false, usageAllowed = true, appUsage = entries, usageError = null)
+                    },
+                    onFailure = {
+                        uiState = uiState.copy(usageBusy = false, usageError = "暂时无法读取应用统计，请检查使用情况访问权限。")
                     }
-                }, onFailure = { usageRows?.addView(label("暂时无法读取应用统计，请检查使用情况访问权限。", 14, muted)) })
+                )
             }
         }
-    }
-
-    private fun showConnections() {
-        heading("CONNECTION OBSERVER", "连接观察", "手机 Mihomo 的目标、协议与代理链")
-        val source = card()
-        source.addView(label("Mihomo 控制器", 15, ink, true)); gap(source, 7)
-        controllerStatus = label(connectionState, 14, muted); source.addView(controllerStatus); gap(source)
-        source.addView(button("配置手机控制器") { configureController() })
-        val search = EditText(this).apply {
-            hint = "搜索目标、端口、应用、规则…"; setTextColor(ink); setHintTextColor(muted); textSize = 14f
-            isSingleLine = true; setText(query); setPadding(dp(14), dp(10), dp(14), dp(10)); background = shape(surface, 12)
-            addTextChangedListener(object : TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { query = s.toString(); renderConnections() }
-                override fun afterTextChanged(s: Editable?) {}
-            })
-        }
-        body.addView(search); gap()
-        val filters = row()
-        listOf("全部", "TCP", "UDP").forEach { value -> filters.addView(button(value, protocol == value) { protocol = value; render() }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) }) }
-        body.addView(filters); gap()
-        val routes = row()
-        (listOf<TrafficRoute?>(null) + TrafficRoute.entries).forEach { value ->
-            routes.addView(button(value?.title ?: "全部", routeFilter == value) { routeFilter = value; render() },
-                LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(4) })
-        }
-        body.addView(routes); gap()
-        connectionRows = column(); body.addView(connectionRows); renderConnections()
-    }
-
-    private fun configureController() {
-        val content = column().apply { setPadding(dp(24), dp(12), dp(24), 0) }
-        content.addView(label("填写手机 Clash Meta 中的 External Controller 地址。", 13, muted))
-        val address = EditText(this).apply { setText(controller); hint = "http://127.0.0.1:9090"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI; isSingleLine = true }
-        val password = EditText(this).apply { hint = "Secret（如有，加密保存在本机）"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD; setText(secret); isSingleLine = true; importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO; isSaveEnabled = false }
-        content.addView(address); content.addView(password)
-        val dialog = AlertDialog.Builder(this).setTitle("连接手机控制器").setView(content).setNegativeButton("取消", null).setNeutralButton("断开") { _, _ ->
-            if (!runCatching { ControllerSecretStore(getPreferences(0)).save(controller, "", false) }.getOrDefault(false)) {
-                Toast.makeText(this, "断开设置保存失败，请重试", Toast.LENGTH_LONG).show()
-                return@setNeutralButton
-            }
-            controllerGeneration++; controllerEnabled = false; secret = ""; connections = emptyList(); connectionState = "已断开"; resetForward()
-            if (studio.live) { studio.now(); studio.accept(emptyList(), SystemClock.elapsedRealtime(), System.currentTimeMillis(), connectionState) }
-            render()
-            persistState()
-        }.setPositiveButton("连接", null).create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val value = address.text.toString().trim().trimEnd('/')
-                val uri = runCatching { URI(value) }.getOrNull()
-                val loopback = uri?.host in listOf("127.0.0.1", "localhost", "[::1]")
-                if (uri == null || uri.host == null || uri.userInfo != null || uri.query != null || uri.fragment != null || !uri.path.isNullOrEmpty() || (uri.scheme != "https" && !(uri.scheme == "http" && loopback))) {
-                    address.error = "使用本机 HTTP 或 HTTPS 根地址，不包含密钥"; return@setOnClickListener
-                }
-                val changedController = controller != value
-                val newSecret = password.text.toString()
-                if (!runCatching { ControllerSecretStore(getPreferences(0)).save(value, newSecret, true) }.getOrDefault(false)) {
-                    password.error = "无法安全保存连接设置，请重试"; return@setOnClickListener
-                }
-                controller = value; secret = password.text.toString(); controllerEnabled = true; controllerGeneration++
-                if (studio.live) {
-                    studio.switchSource(false); studio.switchSource(true)
-                }
-                if (changedController) overseasExits = emptySet()
-                resetForward(clearHistory = changedController)
-                getPreferences(0).edit().putString("controller", controller).apply()
-                getPreferences(0).edit().putStringSet("overseasExits", overseasExits).apply()
-                connections = emptyList(); connectionState = "连接中…"; dialog.dismiss(); render()
-                persistState()
-                if (!controllerBusy) fetchConnections()
-            }
-        }
-        dialog.show()
-    }
-
-    private fun fetchConnections() {
-        if (!foreground || !controllerEnabled || controllerBusy) return
-        controllerBusy = true
-        val generation = controllerGeneration; val address = controller; val token = secret
-        worker.execute {
-            var httpStatus: Int? = null
-            val result = runCatching {
-                val connection = URL("$address/connections").openConnection() as HttpURLConnection
-                try {
-                    connection.connectTimeout = 3000; connection.readTimeout = 3000; connection.instanceFollowRedirects = false
-                    if (token.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $token")
-                    val code = connection.responseCode
-                    httpStatus = code.takeIf { it in 100..599 }
-                    if (code == 401 || code == 403) error("鉴权失败，请检查 Secret")
-                    if (code != 200) error("控制器返回 HTTP $code")
-                    val payload = connection.inputStream.bufferedReader().use { reader ->
-                        val data = StringBuilder(); val buffer = CharArray(8192)
-                        while (true) { val count = reader.read(buffer); if (count < 0) break; data.append(buffer, 0, count); if (data.length > 4_000_000) error("控制器快照过大") }
-                        data.toString()
-                    }
-                    val json = JSONObject(payload)
-                    if (!json.has("connections")) error("不是有效的 Mihomo 快照")
-                    val array = json.optJSONArray("connections")
-                    if (array == null && !json.isNull("connections")) error("连接列表格式无效")
-                    Pair(SystemClock.elapsedRealtime(), (0 until (array?.length() ?: 0)).map { array!!.getJSONObject(it) })
-                } finally { connection.disconnect() }
-            }
-            handler.post {
-                controllerBusy = false
-                if (isDestroyed || !foreground || generation != controllerGeneration) return@post
-                result.fold(onSuccess = { (time, items) ->
-                    connections = items
-                    if (studio.live) studio.accept(items.map(StudioPanel::parse), time, System.currentTimeMillis())
-                    forwardSampledAt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.ROOT).format(Date())
-                    connectionState = "● 已连接 · HTTP $httpStatus · ${items.size} 条连接 · $forwardSampledAt"
-                    appendRequestLog("Mihomo /connections", httpStatus, null)
-                    if (forwardEnabled) {
-                        val counters = items.map(::routedCounter)
-                        forwardRate = forwardRates.accept(time, counters, overseasExits)
-                        appendSample(forwardTrend, forwardRate)
-                        val count = counters.count { trafficRoute(it.exit, overseasExits) == TrafficRoute.OVERSEAS }
-                        forwardState = when {
-                            overseasExits.isEmpty() -> "请选择海外出口"
-                            count == 0 && items.isNotEmpty() -> "所选出口未匹配当前连接，请核对节点名称"
-                            forwardRate == null -> "等待连续采样 · $forwardSampledAt"
-                            else -> "$count 条转发连接 · $forwardSampledAt"
-                        }
-                    }
-                }, onFailure = {
-                    connections = emptyList()
-                    connectionState = when (it) {
-                        is java.net.ConnectException -> "无法连接，请确认手机控制器已开启"
-                        is java.net.SocketTimeoutException -> "连接超时，正在重试"
-                        is IllegalStateException -> it.message ?: "快照无效"
-                        else -> "读取失败，请检查地址、网络与证书"
-                    }
-                    appendRequestLog("Mihomo /connections", httpStatus, connectionState)
-                    connectionState = "${httpStatus?.let { code -> "HTTP $code" } ?: "未取得状态码"} · $connectionState"
-                    if (studio.live) studio.accept(emptyList(), SystemClock.elapsedRealtime(), System.currentTimeMillis(), connectionState)
-                    resetForward()
-                    if (forwardEnabled) forwardState = connectionState
-                })
-                renderConnections()
-                updateOverview()
-                studioPanel?.updateStatus(connectionState)
-                studioPanel?.refresh(animate = true)
-            }
-        }
-    }
-    private fun renderConnections() {
-        controllerStatus?.text = connectionState
-        val rows = connectionRows ?: return
-        rows.removeAllViews()
-        if (!controllerEnabled) {
-            val box = card(rows); box.addView(label("接入后查看每一条连接", 18, ink, true)); gap(box)
-            box.addView(label("请先连接手机上的 Mihomo 控制器。", 14, muted)); return
-        }
-        val filtered = connections.filter {
-            (protocol == "全部" || it.optJSONObject("metadata")?.optString("network")?.equals(protocol, true) == true) &&
-                (routeFilter == null || trafficRoute(routedCounter(it).exit, overseasExits) == routeFilter) && it.toString().contains(query, true)
-        }
-        if (filtered.isEmpty()) { rows.addView(label(if (connections.isEmpty()) "尚无有效连接快照" else "没有匹配的连接", 14, muted)); return }
-        filtered.take(150).forEach { item ->
-            val metadata = item.optJSONObject("metadata") ?: JSONObject()
-            val host = metadata.optString("host").ifBlank { metadata.optString("destinationIP", "未知目标") }
-            val sourcePort = connectionPort(metadata, "sourcePort")
-            val destinationPort = connectionPort(metadata, "destinationPort")
-            val source = connectionEndpoint(metadata.optString("sourceIP"), sourcePort)
-            val destination = connectionEndpoint(host, destinationPort)
-            val process = metadata.optString("process").ifBlank { metadata.optString("type", "未知应用") }
-            val box = card(rows)
-            box.addView(label(destination, 16, ink, true)); gap(box, 6)
-            box.addView(label("${metadata.optString("network").uppercase()}  ·  $process", 14, mint)); gap(box, 6)
-            box.addView(label("源端口 $sourcePort  →  目标端口 $destinationPort", 14, ink)); gap(box, 6)
-            box.addView(label("源地址：$source", 14, muted)); gap(box, 6)
-            val exit = routedCounter(item).exit
-            box.addView(label("${trafficRoute(exit, overseasExits).title} · ${exit ?: "出口未知"}", 14, muted)); gap(box, 6)
-            box.addView(label("↓ ${bytes(item.optLong("download").toDouble())}   ↑ ${bytes(item.optLong("upload").toDouble())}", 14, muted))
-            box.setOnClickListener {
-                val chains = item.optJSONArray("chains")?.let { array -> (0 until array.length()).joinToString(" → ") { array.optString(it) } } ?: "未知"
-                val destinationIp = connectionEndpoint(metadata.optString("destinationIP"), destinationPort)
-                val detail = "应用：$process\n目标：$destination\n目标 IP：$destinationIp\n源：$source\n源端口：$sourcePort\n目标端口：$destinationPort\n协议：${metadata.optString("network")}\n规则：${item.optString("rule")} ${item.optString("rulePayload")}\n代理链：$chains\n开始：${item.optString("start")}\nID：${item.optString("id")}"
-                AlertDialog.Builder(this).setTitle("连接详情").setMessage(detail).setPositiveButton("关闭", null).show()
-            }
-            box.isFocusable = true
-        }
-        if (filtered.size > 150) rows.addView(label("显示前 150 条，请搜索缩小范围。", 12, muted))
-    }
-
-    private fun connectionPort(metadata: JSONObject, key: String): String =
-        metadata.optString(key).toIntOrNull()?.takeIf { it in 0..65535 }?.toString() ?: "未知"
-
-    private fun connectionEndpoint(address: String, port: String): String {
-        val host = address.takeUnless { it.isBlank() || it == "null" } ?: "未知地址"
-        val formatted = if (host.contains(':') && !host.startsWith('[')) "[$host]" else host
-        return "$formatted:$port"
-    }
-
-    private fun diagnosticText(): String {
-        val active = connectivity.activeNetwork
-        val capabilities = connectivity.getNetworkCapabilities(active)
-        val properties = connectivity.getLinkProperties(active)
-        val verified = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
-        return "网络：${networkSummary()}\n系统联网验证：${if (verified) "已通过" else "未通过 / 未知"}\n接口：${properties?.interfaceName ?: "未知"}\n本地地址：${properties?.linkAddresses?.joinToString() ?: "未知"}\nDNS：${properties?.dnsServers?.joinToString { it.hostAddress ?: "未知" } ?: "未知"}\nPrivate DNS：${if (properties?.isPrivateDnsActive == true) "已启用" else "未启用"}\nMTU：${properties?.mtu ?: "未知"}"
-    }
-    private fun showDiagnostics() {
-        heading("NETWORK INSIGHT", "诊断中心", "检查当前网络")
-        val info = card(); info.addView(label("系统网络快照", 16, ink, true)); gap(info)
-        info.addView(label(diagnosticText(), 14, muted).apply { setTextIsSelectable(true) })
-        info.addView(button("刷新网络状态") { render() })
-        showPacketLoss()
-        val probe = card(); probe.addView(label("HTTPS 连通性", 16, ink, true)); gap(probe, 8)
-        probeLabel = label(probeResult, 14, muted); probe.addView(probeLabel); gap(probe)
-        probe.addView(button(if (probeBusy) "检查中…" else "检查连接", true) { runProbe() })
-        val logs = card(); logs.addView(label("请求日志 · 最近 100 条", 16, ink, true)); gap(logs, 8)
-        requestLogRows = column(); logs.addView(requestLogRows); renderRequestLogs()
-        body.addView(button("分享诊断报告") {
-            val report = "Wiesler Android 0.1.0\n${Date()}\n${diagnosticText()}\nICMP 目标：$lossTarget\n${lossWindow.text()}\n$lossStatus\nHTTPS：$probeResult\n系统接口累计 RX=${bytes(lastRx.toDouble())} TX=${bytes(lastTx.toDouble())}\nVPN 下系统接口可能重复计量。\n\n最近请求日志\n${requestLogs.joinToString("\n") { it.text() }}"
-            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, report) }, "分享诊断报告"))
-        }); gap()
-        body.addView(button("关于数据来源") { showScope() })
-    }
-    private fun showPacketLoss() {
-        val box = card(); box.addView(label("ICMP 丢包率 · 最近 60 次探测", 17, ink, true)); gap(box, 8)
-        val address = EditText(this).apply {
-            setText(lossTarget); hint = "目标 IPv4"; contentDescription = "ICMP 目标 IPv4"
-            inputType = InputType.TYPE_CLASS_PHONE; isSingleLine = true; isEnabled = !lossRunning
-        }
-        box.addView(address); gap(box, 8)
-        lossLabel = label(lossWindow.text(), 17, mint, true); box.addView(lossLabel)
-        lossStatusLabel = label(lossStatus, 14, muted); box.addView(lossStatusLabel); gap(box, 8)
-        box.addView(button(if (lossRunning) "停止监控" else "开始监控", true) {
-            if (lossRunning) { stopLoss("已停止 · 保留最后结果"); render() }
-            else {
-                val value = address.text.toString().trim()
-                if (!validPingTarget(value)) address.error = "请输入单播 IPv4 地址"
-                else {
-                    lossTarget = value; getPreferences(0).edit().putString("lossTarget", value).apply()
-                    lossGeneration++; lossWindow.clear(); lossRunning = true; lossStatus = "$lossTarget · 正在探测…"
-                    render(); sampleLoss()
-                }
-            }
-        }); gap(box, 8)
-        box.addView(label("系统路由 · 每次完成后间隔 1 秒，超时 2 秒。仅测目标 ICMP 回包，不代表代理业务丢包率。", 14, muted))
     }
 
     private fun stopLoss(message: String) {
-        lossRunning = false; lossGeneration++; handler.removeCallbacks(lossTick); lossProbe?.cancel(); lossProbe = null
-        lossStatus = message; lossStatusLabel?.text = message
+        lossRunning = false
+        lossGeneration++
+        handler.removeCallbacks(lossTick)
+        lossProbe?.cancel()
+        lossProbe = null
+        lossStatus = message
     }
 
     private fun sampleLoss() {
         if (!foreground || !lossRunning) return
-        val generation = lossGeneration; val address = lossTarget
-        val probe = IcmpProbe(); lossProbe = probe
+        val generation = lossGeneration
+        val address = lossTarget
+        // 持续探测期间复用同一个进程内 ICMP Socket 探针实例，避免每次发包重新创建 Socket 或 fork ping 子进程。
+        // Reuse a single in-process ICMP probe across continuous ticks (zero fork/exec or fd churn).
+        val probe = lossProbe ?: IcmpProbe().also { lossProbe = it }
         lossWorker.execute {
             val result = probe.run(address)
             handler.post {
                 if (isDestroyed || !foreground || !lossRunning || generation != lossGeneration) return@post
-                lossProbe = null; lossWindow.add(result)
-                lossStatus = "$address · ${SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date())} · ${result.message}"
-                lossLabel?.text = lossWindow.text(); lossStatusLabel?.text = lossStatus
-                handler.postDelayed(lossTick, 1000)
+                lossWindow.add(result)
+                timedPings.addLast(TimedPingEvidence(System.currentTimeMillis(), result.outcome, result.rttMs))
+                while (timedPings.size > 60) timedPings.removeFirst()
+                linkEvidenceVersion++
+                qualityDirty = true
+                lossStatus = "$address · ${lossTimeFmt.format(Date())} · ${result.message}"
+                publishUiState(immediate = false)
+                handler.postDelayed(lossTick, uiPrefs.performanceMode.icmpIntervalMs)
             }
         }
     }
 
-    private fun showScope() {
-        AlertDialog.Builder(this).setTitle("数据来源").setMessage("全局流量来自 Android 系统接口计数，只在前台采样。VPN 下可能重复计量，不作为套餐账单。\n\n海外转发按你指定的实际出口节点统计，不自动验证节点或目标的地理位置。每秒读取 Mihomo 活跃连接并按连接 ID 差分；首次出现、采样间结束的连接以及最后一段流量可能漏计，属于已观测流量。两张图均保留最近 60 次采样，不能相减当作直连流量。\n\n开关只控制观察，不改变代理路由。后台、失败或重新开启后重建基线；更换控制器或出口重置转发图表和累计。\n\n应用流量来自系统使用情况统计，可能延迟。连接列表仅展示 Mihomo 处理的连接。\n\nHTTPS 检查向 www.gstatic.com 发起一次请求。App 不接管 VPN，也不会自动上传数据。").setPositiveButton("知道了", null).show()
-    }
-    private fun runProbe() {
-        if (probeBusy) return
-        probeBusy = true; probeResult = "正在检查…"; probeLabel?.text = probeResult
-        worker.execute {
-            var httpStatus: Int? = null
-            var failure: String? = null
-            val result = runCatching {
-                val connection = URL("https://www.gstatic.com/generate_204").openConnection() as HttpURLConnection
-                try {
-                    connection.connectTimeout = 5000; connection.readTimeout = 5000; connection.instanceFollowRedirects = false; connection.useCaches = false
-                    val start = SystemClock.elapsedRealtime(); val code = connection.responseCode
-                    httpStatus = code.takeIf { it in 100..599 }
-                    "HTTP $code · ${SystemClock.elapsedRealtime() - start} ms\n${if (code == 204) "HTTPS 请求成功" else "未得到预期 204 响应"}（含建连耗时）"
-                } finally { connection.disconnect() }
-            }.getOrElse {
-                failure = if (it is java.net.SocketTimeoutException) "超时" else "网络或 TLS 错误"
-                "检查失败：$failure"
+    private fun measureHttpsProbe(): Triple<HttpsProbeSnapshot, String, String?> {
+        var httpStatus: Int? = null
+        var failure: String? = null
+        var elapsedMs: Long? = null
+        val text = runCatching {
+            val connection = URL("https://www.gstatic.com/generate_204").openConnection() as HttpURLConnection
+            try {
+                connection.connectTimeout = 4000
+                connection.readTimeout = 4000
+                connection.instanceFollowRedirects = false
+                connection.useCaches = false
+                val start = SystemClock.elapsedRealtime()
+                val code = connection.responseCode
+                elapsedMs = SystemClock.elapsedRealtime() - start
+                httpStatus = code.takeIf { it in 100..599 }
+                "HTTP $code · ${elapsedMs} ms\n${if (code == 204) "HTTPS 请求成功" else "未得到预期 204 响应"}（含建连耗时）"
+            } finally {
+                connection.disconnect()
             }
+        }.getOrElse {
+            failure = if (it is java.net.SocketTimeoutException) "超时" else "网络或 TLS 错误"
+            "检查失败：$failure"
+        }
+        val snapshot = HttpsProbeSnapshot(
+            observedAtMs = System.currentTimeMillis(),
+            statusCode = httpStatus,
+            latencyMs = elapsedMs,
+            ok = httpStatus == 204,
+            error = failure
+        )
+        return Triple(snapshot, text, failure)
+    }
+
+    private fun runHttpsProbe() {
+        if (probeBusy) return
+        probeBusy = true
+        probeResult = "正在检查…"
+        publishUiState()
+        worker.execute {
+            val (snapshot, resultText, failure) = measureHttpsProbe()
             handler.post {
-                probeBusy = false; probeResult = result
+                probeBusy = false
+                probeResult = resultText
+                lastHttpsProbe = snapshot
                 if (!isDestroyed) {
-                    appendRequestLog("HTTPS gstatic 检查", httpStatus, failure)
-                    if (page == 3) render()
+                    appendRequestLog("HTTPS gstatic 检查", snapshot.statusCode, failure)
+                    publishUiState()
                 }
             }
+        }
+    }
+
+    private fun runQualityCheck() {
+        if (qualityCheckBusy) return
+        val token = ++qualityCheckGeneration
+        qualityCheckBusy = true
+        refreshSystemProbes(force = true)
+        val useController = controllerEnabled
+        val addr = controller
+        val sec = secret
+        val pingTargetSnapshot = lossTarget
+        val needQuickBurst = !lossRunning
+        uiState = uiState.copy(qualityCheckBusy = true)
+        publishUiState()
+
+        // 复用现有 DNS、HTTPS 204、公网出口与 ICMP 探针并发执行一次综合体检，各项完成即增量刷新 UI。
+        // Run existing DNS, HTTPS 204, Egress, and ICMP probes concurrently with progressive UI updates.
+        val remaining = java.util.concurrent.atomic.AtomicInteger(if (needQuickBurst) 4 else 3)
+        fun markDone() {
+            if (remaining.decrementAndGet() <= 0) {
+                handler.post {
+                    if (isDestroyed || token != qualityCheckGeneration) return@post
+                    qualityCheckBusy = false
+                    refreshSystemProbes(force = true)
+                    publishUiState()
+                }
+            }
+        }
+
+        worker.execute {
+            val dnsResult = runCatching { collectActiveDnsInspection() }
+            handler.post {
+                if (!isDestroyed && token == qualityCheckGeneration) {
+                    dnsResult.getOrNull()?.let { lastDnsInspection = it }
+                    qualityDirty = true
+                    publishUiState(immediate = false)
+                }
+            }
+            markDone()
+        }
+
+        worker.execute {
+            val (httpsSnap, text, failure) = measureHttpsProbe()
+            handler.post {
+                if (!isDestroyed && token == qualityCheckGeneration) {
+                    lastHttpsProbe = httpsSnap
+                    probeResult = text
+                    qualityDirty = true
+                    appendRequestLog("HTTPS gstatic 体检", httpsSnap.statusCode, failure)
+                    publishUiState(immediate = false)
+                }
+            }
+            markDone()
+        }
+
+        worker.execute {
+            val sysRes = EgressProbe.measure(proxyPort = null)
+            val proxyRes = if (useController) {
+                EgressProbe.fetchMihomoProxyPort(addr, sec).fold(
+                    onSuccess = { port -> EgressProbe.measure(proxyPort = port) },
+                    onFailure = { Result.failure(it) }
+                )
+            } else {
+                Result.failure(IllegalStateException("未连接控制器"))
+            }
+            handler.post {
+                if (!isDestroyed && token == qualityCheckGeneration) {
+                    linkEvidenceVersion++
+                    qualityDirty = true
+                    uiState = uiState.copy(
+                        egress = EgressUiState(
+                            busy = false,
+                            system = sysRes.getOrNull() ?: uiState.egress.system,
+                            systemError = sysRes.exceptionOrNull()?.message,
+                            proxy = proxyRes.getOrNull() ?: uiState.egress.proxy,
+                            proxyError = if (useController) proxyRes.exceptionOrNull()?.message else null
+                        )
+                    )
+                    publishUiState(immediate = false)
+                }
+            }
+            markDone()
+        }
+
+        if (needQuickBurst) {
+            lossWorker.execute {
+                val burstProbe = IcmpProbe()
+                try {
+                    repeat(4) { idx ->
+                        if (isDestroyed || token != qualityCheckGeneration || lossRunning) return@repeat
+                        val sample = burstProbe.run(pingTargetSnapshot)
+                        val now = System.currentTimeMillis()
+                        handler.post {
+                            if (isDestroyed || token != qualityCheckGeneration) return@post
+                            lossWindow.add(sample)
+                            timedPings.addLast(TimedPingEvidence(now, sample.outcome, sample.rttMs))
+                            while (timedPings.size > 60) timedPings.removeFirst()
+                            linkEvidenceVersion++
+                            qualityDirty = true
+                            lossStatus = "$pingTargetSnapshot · ${lossTimeFmt.format(Date())} · ${sample.message}"
+                            publishUiState(immediate = false)
+                        }
+                        if (idx < 3 && sample.outcome == "reply") {
+                            runCatching { Thread.sleep(200L) }
+                        }
+                    }
+                } finally {
+                    burstProbe.close()
+                }
+                markDone()
+            }
+        }
+    }
+
+    private fun toggleQualityContinuousMonitor(enabled: Boolean) {
+        if (enabled) {
+            if (!lossRunning) {
+                lossGeneration++
+                lossRunning = true
+                lossStatus = "$lossTarget · 持续监测中…"
+                publishUiState()
+                sampleLoss()
+            }
+            if (RfCellularCollector.hasPermissions(this) && !rfEnabled) {
+                setRfMonitoringEnabled(true)
+            }
+        } else {
+            if (lossRunning) {
+                stopLoss("已停止持续监测 · 保留最后结果")
+            }
+            publishUiState()
+        }
+    }
+
+    private fun selectQualityPingTarget(target: String) {
+        val clean = target.trim()
+        if (!validPingTarget(clean) || clean == lossTarget) return
+        lossTarget = clean
+        getPreferences(0).edit().putString("lossTarget", clean).apply()
+        lossWindow.clear()
+        timedPings.clear()
+        lossProbe?.cancel()
+        lossProbe = null
+        linkEvidenceVersion++
+        qualityDirty = true
+        if (lossRunning) {
+            lossGeneration++
+            lossStatus = "$clean · 正在探测…"
+            publishUiState()
+            sampleLoss()
+        } else {
+            lossStatus = "$clean · 已切换目标"
+            publishUiState()
+            runQualityCheck()
         }
     }
 
     private fun appendRequestLog(source: String, code: Int?, error: String?) {
-        requestLogs.addFirst(RequestLog(SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date()), source, code, error))
+        requestLogs.addFirst(
+            RequestLog(sampleDateFmt.format(Date()), source, code, error)
+        )
         while (requestLogs.size > 100) requestLogs.removeLast()
-        renderRequestLogs()
-        if (!foreground) persistState()
+        if (!foreground) persistState(async = false)
     }
 
-    private fun renderRequestLogs() {
-        val rows = requestLogRows ?: return
-        rows.removeAllViews()
-        if (requestLogs.isEmpty()) rows.addView(label("连接控制器或检查 HTTPS 后显示请求结果", 14, muted))
-        requestLogs.forEach { entry ->
-            rows.addView(label(entry.text(), 14, if (entry.failed) Color.rgb(255, 158, 158) else if (entry.result == "成功") mint else muted).apply { setTextIsSelectable(true) })
-            gap(rows, 8)
+    private fun setRfMonitoringEnabled(enabled: Boolean) {
+        if (enabled && !RfCellularCollector.hasPermissions(this)) {
+            rfPermissionLauncher.launch(RfCellularCollector.REQUIRED_PERMISSIONS)
+            return
+        }
+        rfEnabled = enabled
+        getPreferences(0).edit().putBoolean("rfEnabled", enabled).apply()
+        rfStatusOverride = null
+        if (enabled) {
+            rfCollector?.updateCadence(uiPrefs.performanceMode.rfSteadyPollMs, uiPrefs.performanceMode.rfEscalatedPollMs)
+            if (foreground) rfCollector?.start()
+        } else {
+            rfCollector?.stop()
+        }
+        publishUiState(immediate = true)
+    }
+
+    private fun evaluateRfSnapshot(force: Boolean = false): RfDiagnosticsSnapshot {
+        val nowMs = System.currentTimeMillis()
+        val active = rfEnabled && (rfCollector?.isRunning == true)
+        val perm = RfCellularCollector.hasPermissions(this)
+        val engVer = rfEngine.version
+        val linkVer = linkEvidenceVersion
+        val inputsUnchanged = engVer == cachedRfEngineVersion &&
+            linkVer == cachedRfLinkVersion &&
+            active == cachedRfActive &&
+            perm == cachedRfPerm &&
+            rfStatusOverride == cachedRfStatusOverride
+        // 输入未变化且距上次评估不足 3 秒（或射频未运行）时直接复用缓存快照，避免单轮回调内重复计算。
+        // Reuse cached RF snapshot when inputs are unchanged and within 3s window (or RF idle).
+        if (!force && inputsUnchanged && (!active || nowMs - cachedRfEvaluatedAtMs < 3_000L)) {
+            return cachedRfSnapshot
+        }
+        val egressState = uiState.egress
+        val link = RfLinkEvidence(
+            nowMs = nowMs,
+            recentPings = timedPings.toList(),
+            controllerEnabled = controllerEnabled,
+            controllerHealthy = controllerHealthy,
+            lastControllerErrorAtMs = lastControllerErrorAtMs,
+            lastControllerError = lastControllerErrorMessage,
+            cellularValidated = cellularValidated,
+            cellularLostAtMs = cellularLostAtMs,
+            systemEgressOk = when {
+                egressState.system != null -> true
+                egressState.systemError != null -> false
+                else -> null
+            },
+            proxyEgressOk = when {
+                egressState.proxy != null -> true
+                egressState.proxyError != null && controllerEnabled -> false
+                else -> null
+            }
+        )
+        val snap = rfEngine.evaluate(
+            nowMs = nowMs,
+            active = active,
+            permissionGranted = perm,
+            statusOverride = rfStatusOverride,
+            linkEvidence = link
+        )
+        cachedRfSnapshot = snap
+        cachedRfEngineVersion = engVer
+        cachedRfLinkVersion = linkVer
+        cachedRfActive = active
+        cachedRfPerm = perm
+        cachedRfStatusOverride = rfStatusOverride
+        cachedRfEvaluatedAtMs = nowMs
+        return snap
+    }
+
+    private fun shareTextReport() {
+        refreshSystemProbes(force = true)
+        val sysIp = uiState.egress.system?.let { "${it.ip}（${it.location?.summary() ?: "位置未知"}）" } ?: "未探测"
+        val proxyIp = uiState.egress.proxy?.let { "${it.ip}（${it.location?.summary() ?: "位置未知"}）" } ?: "未探测"
+        val rfSummary = evaluateRfSnapshot(force = true).toSummaryText()
+        val report = "Wiesler Android 0.1.1\n${Date()}\n$cachedDiagnosticText\n系统公网出口：$sysIp\n代理公网出口：$proxyIp\nICMP 目标：$lossTarget\n${lossWindow.text()}\n$lossStatus\nHTTPS：$probeResult\n系统接口累计 RX=${formatBytes(lastRx.toDouble())} TX=${formatBytes(lastTx.toDouble())}\nVPN 下系统接口可能重复计量。\n\n$rfSummary\n\n最近请求日志\n${requestLogs.joinToString("\n") { it.text() }}"
+        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, report)
+        }, "分享诊断报告"))
+    }
+
+    private fun publishUiState(immediate: Boolean = true) {
+        if (immediate) {
+            handler.removeCallbacks(publishRunnable)
+            publishPending = false
+            publishUiStateNow()
+            return
+        }
+        // 合并 150ms 窗口内连续到达的后台探针回调，将每秒 3–5 次整树重组压缩为最多 1 次。
+        // Coalesce bursty background telemetry callbacks within 150ms into a single Compose state commit.
+        if (!publishPending) {
+            publishPending = true
+            handler.postDelayed(publishRunnable, 150L)
         }
     }
 
-    private inner class TrendView(context: Context, private val samples: List<Rate?>) : View(context) {
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val path = Path()
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            val top = dp(22).toFloat(); val bottom = height - dp(8).toFloat()
-            paint.color = line; paint.strokeWidth = dp(1).toFloat()
-            repeat(4) { index -> val y = top + (bottom - top) * index / 3; canvas.drawLine(0f, y, width.toFloat(), y, paint) }
-            val max = maxOf(1024.0, samples.filterNotNull().maxOfOrNull { maxOf(it.rx, it.tx) } ?: 0.0)
-            paint.color = muted; paint.textSize = dp(10).toFloat(); paint.style = Paint.Style.FILL
-            canvas.drawText("${bytes(max)}/s", 0f, dp(12).toFloat(), paint)
-            if (samples.none { it != null }) {
-                paint.textSize = dp(13).toFloat(); canvas.drawText("等待连续采样", dp(12).toFloat(), height / 2f, paint); return
-            }
-            for (up in listOf(false, true)) {
-                path.reset(); var drawing = false
-                samples.forEachIndexed { index, rate ->
-                    if (rate == null) { drawing = false; return@forEachIndexed }
-                    val x = width * (59 - samples.size + 1 + index) / 59f
-                    val y = bottom - ((if (up) rate.tx else rate.rx) / max * (bottom - top)).toFloat()
-                    if (drawing) path.lineTo(x, y) else path.moveTo(x, y)
-                    drawing = true
-                    if (index == samples.lastIndex) { paint.color = if (up) violet else mint; canvas.drawCircle(x.coerceAtMost(width - dp(3).toFloat()), y, dp(3).toFloat(), paint) }
-                }
-                paint.color = if (up) violet else mint; paint.style = Paint.Style.STROKE; paint.strokeWidth = dp(2).toFloat(); canvas.drawPath(path, paint); paint.style = Paint.Style.FILL
+    private fun publishUiStateNow() {
+        refreshSystemProbes(force = false)
+        val tab = uiState.activeTab
+        val currentFrame = studio.current
+        // 仅在隐私页按需重新分析连接，避免非隐私页重复扫描。
+        // Recompute privacy analysis lazily when viewing the Privacy tab or when frame/policy changes.
+        if (tab == WieslerTab.PRIVACY) {
+            val policy = PrivacyPolicy(uiPrefs.expectProxy, uiPrefs.uploadThresholdKib.toLong() * 1024L)
+            if (currentFrame !== cachedPrivacyFrame || policy != cachedPrivacyPolicy || cachedPrivacyReport == null) {
+                val report = PrivacyInspector.analyze(currentFrame, policy, if (studio.live) "mihomo" else "demo")
+                cachedPrivacyFrame = currentFrame
+                cachedPrivacyPolicy = policy
+                cachedPrivacyReport = report
+                cachedPrivacySummary = PrivacyInspector.summarize(report)
             }
         }
+        val candidates = if (overseasExits.isEmpty()) availableExitsCache else (availableExitsCache + overseasExits).distinct().sorted()
+        val frameIndex = if (studio.held == null) {
+            (studio.frames.size - 1).coerceAtLeast(0)
+        } else {
+            studio.frames.indexOf(studio.held).coerceAtLeast(0)
+        }
+        // 仅在图谱页且帧或筛选条件确实变化时重算分组与微折线；冻结画面期间零重复计算。
+        // Compute graph flows/groups/sparklines only on GRAPH tab when frame or filters actually changed.
+        val filteredFlows: List<StudioFlow>
+        val hostGroups: List<StudioHostGroup>
+        val rateHist: Map<String, List<Rate?>>
+        if (tab == WieslerTab.GRAPH) {
+            val graphChanged = currentFrame !== cachedGraphFrame ||
+                studio.query != cachedGraphQuery ||
+                studio.protocol != cachedGraphProtocol ||
+                studio.sourceFilter != cachedGraphSourceFilter ||
+                studio.selectedId != cachedGraphSelectedId ||
+                overseasExits != cachedGraphOverseasExits
+            if (graphChanged) {
+                cachedGraphFilteredFlows = studio.filtered()
+                cachedGraphHostGroups = studio.graphHostGroups(cachedGraphFilteredFlows)
+                val visibleKeys = cachedGraphFilteredFlows.take(60).mapTo(HashSet()) { it.flowKey }
+                cachedGraphRateHistory = studio.rateHistory(filterKeys = visibleKeys)
+                cachedGraphFrame = currentFrame
+                cachedGraphQuery = studio.query
+                cachedGraphProtocol = studio.protocol
+                cachedGraphSourceFilter = studio.sourceFilter
+                cachedGraphSelectedId = studio.selectedId
+                cachedGraphOverseasExits = overseasExits
+            }
+            filteredFlows = cachedGraphFilteredFlows
+            hostGroups = cachedGraphHostGroups
+            rateHist = cachedGraphRateHistory
+        } else {
+            filteredFlows = uiState.studioFilteredFlows
+            hostGroups = uiState.studioHostGroups
+            rateHist = uiState.studioRateHistory
+        }
+
+        val rfSnap = if (tab == WieslerTab.HOME || tab == WieslerTab.MONITOR || rfEnabled) {
+            evaluateRfSnapshot(force = false)
+        } else {
+            cachedRfSnapshot
+        }
+
+        val qualitySnap = if (tab == WieslerTab.HOME || qualityDirty) {
+            val nowWallMs = System.currentTimeMillis()
+            val qualityInput = NetworkQualityInput(
+                nowMs = nowWallMs,
+                link = cachedSystemLink,
+                pingTarget = lossTarget,
+                pingRunning = lossRunning,
+                recentPings = timedPings.toList(),
+                lossPercent = lossWindow.lossPercent,
+                averageRttMs = lossWindow.averageRtt,
+                pingSent = lossWindow.sent,
+                pingReceived = lossWindow.received,
+                pingErrors = lossWindow.errors,
+                dnsInspection = lastDnsInspection,
+                httpsProbe = lastHttpsProbe,
+                systemEgress = uiState.egress.system,
+                systemEgressError = uiState.egress.systemError,
+                proxyEgress = uiState.egress.proxy,
+                proxyEgressError = uiState.egress.proxyError,
+                rfDiagnostics = rfSnap,
+                controllerEnabled = controllerEnabled,
+                controllerHealthy = controllerHealthy,
+                activeFlowCount = currentFrame?.flows?.size,
+                directFlowCount = currentFrame?.directCount ?: 0,
+                proxyFlowCount = currentFrame?.proxyCount ?: 0,
+                globalRate = lastRate,
+                recentRequestLogs = requestLogs.take(20)
+            )
+            val evaluatedQuality = NetworkQualityEngine.evaluate(qualityInput, qualityHistory.snapshot())
+            if (foreground && tab == WieslerTab.HOME) {
+                qualityHistory.record(evaluatedQuality, lossWindow.averageRtt, lossWindow.lossPercent)
+            }
+            qualityDirty = false
+            evaluatedQuality.copy(history = qualityHistory.snapshot())
+        } else {
+            uiState.qualitySnapshot
+        }
+        uiState = uiState.copy(
+            preferences = uiPrefs,
+            systemLink = cachedSystemLink,
+            lastDnsInspection = lastDnsInspection,
+            lastHttpsProbe = lastHttpsProbe,
+            qualitySnapshot = qualitySnap,
+            qualityCheckBusy = qualityCheckBusy,
+            controllerAddress = controller,
+            controllerEnabled = controllerEnabled,
+            controllerHealthy = controllerHealthy,
+            hasSecret = secret.isNotEmpty(),
+            connectionState = connectionState,
+            capturePaused = capturePaused,
+            studioLive = studio.live,
+            studioFrozen = studio.held != null,
+            studioFrameCount = studio.frames.size,
+            studioFrameIndex = frameIndex,
+            studioCurrentFrame = currentFrame,
+            studioFilteredFlows = filteredFlows,
+            studioHostGroups = hostGroups,
+            studioSelectedId = studio.selectedId,
+            studioQuery = studio.query,
+            studioProtocol = studio.protocol,
+            studioSourceFilter = studio.sourceFilter,
+            studioGraphMode = studio.graphMode,
+            studioRateHistory = rateHist,
+            mihomoTrend = if (tab == WieslerTab.MONITOR) mihomoTrend.toList() else uiState.mihomoTrend,
+            globalEnabled = !paused,
+            globalRate = lastRate,
+            globalTrend = if (tab == WieslerTab.MONITOR || tab == WieslerTab.HISTORY) trend.toList() else uiState.globalTrend,
+            globalSampledAt = sampledAt,
+            bootRxBytes = lastRx,
+            bootTxBytes = lastTx,
+            networkSummary = cachedNetworkSummary,
+            forwardEnabled = forwardEnabled,
+            overseasExits = overseasExits,
+            availableExits = candidates,
+            forwardRate = forwardRate,
+            forwardTrend = if (tab == WieslerTab.MONITOR) forwardTrend.toList() else uiState.forwardTrend,
+            forwardState = forwardState,
+            forwardObservedRx = forwardRates.observedRx,
+            forwardObservedTx = forwardRates.observedTx,
+            packetLoss = PacketLossUiState(
+                target = lossTarget,
+                running = lossRunning,
+                status = lossStatus,
+                lossPercent = lossWindow.lossPercent,
+                averageRtt = lossWindow.averageRtt,
+                sent = lossWindow.sent,
+                received = lossWindow.received,
+                errors = lossWindow.errors
+            ),
+            rfDiagnostics = rfSnap,
+            usageAllowed = cachedUsageAllowed,
+            systemNetworkSnapshot = cachedDiagnosticText,
+            httpsProbeBusy = probeBusy,
+            httpsProbeResult = probeResult,
+            requestLogs = if (tab == WieslerTab.MONITOR || tab == WieslerTab.HISTORY) requestLogs.toList() else uiState.requestLogs,
+            privacyReport = cachedPrivacyReport,
+            privacySummary = cachedPrivacySummary
+        )
     }
 }

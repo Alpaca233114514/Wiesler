@@ -7,6 +7,12 @@ Copyright JetBrains s.r.o. and Kotlin Programming Language contributors.
 Source: https://github.com/JetBrains/kotlin/tree/v2.2.20
 License: Apache License, Version 2.0 (LICENSE-Apache-2.0.txt).
 
+This application includes AndroidX Jetpack Compose (BOM 2026.06.01, Material 3 1.5.0-alpha16)
+and AndroidX Activity Compose (1.13.0).
+Copyright The Android Open Source Project.
+Source: https://android.googlesource.com/platform/frameworks/support/
+License: Apache License, Version 2.0 (LICENSE-Apache-2.0.txt).
+
 The build-only Gradle Wrapper is from https://github.com/gradle/gradle
 and is licensed under Apache License, Version 2.0.
 
