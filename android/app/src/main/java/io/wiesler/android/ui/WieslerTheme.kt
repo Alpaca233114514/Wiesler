@@ -44,166 +44,183 @@ data class WieslerSemanticColors(
     val graphEdge: Color
 )
 
-// 对齐 desktop/ui/theme.css：纯黑白灰中性底色 + 单一桌面端静谧蓝辅助色 (#6BA4CF / #2B7AB8)。
-// Mirrors desktop/ui/theme.css: pure achromatic black/white neutrals + single desktop steel-blue accent.
+// 对齐 desktop/ui/theme.css 与 WCAG AA 对比度标准：纯中性碳黑/素白灰阶 + 克制语义色。
+// Mirrors desktop/ui/theme.css with WCAG AA contrast: pure carbon/porcelain neutrals + restrained semantic colors.
 private val DarkSemanticColors = WieslerSemanticColors(
     download = Color(0xFF6BA4CF),
-    upload = Color(0xFFB5B5B5),
-    success = Color(0xFF6BA4CF),
-    warning = Color(0xFFD99B4E),
-    danger = Color(0xFFDF6C6C),
-    graphCanvas = Color(0xFF131313),
-    graphGrid = Color(0xFF282828),
-    graphNodeSurface = Color(0xFF1C1C1C),
-    graphNodeSelected = Color(0xFF1C2A35),
-    graphEdge = Color(0xFF4A4A4A)
+    upload = Color(0xFFA8A8B0),
+    success = Color(0xFF56B886),
+    warning = Color(0xFFE0A458),
+    danger = Color(0xFFE57373),
+    graphCanvas = Color(0xFF111113),
+    graphGrid = Color(0xFF26262A),
+    graphNodeSurface = Color(0xFF1A1A1D),
+    graphNodeSelected = Color(0xFF1B2B38),
+    graphEdge = Color(0xFF45454B)
 )
 
 private val LightSemanticColors = WieslerSemanticColors(
-    download = Color(0xFF2B7AB8),
-    upload = Color(0xFF525252),
-    success = Color(0xFF2B7AB8),
-    warning = Color(0xFFAD681B),
-    danger = Color(0xFFC93B3B),
-    graphCanvas = Color(0xFFF5F5F5),
-    graphGrid = Color(0xFFDCDCDC),
+    download = Color(0xFF226BA5),
+    upload = Color(0xFF55555C),
+    success = Color(0xFF187A4E),
+    warning = Color(0xFF9E5D12),
+    danger = Color(0xFFC43434),
+    graphCanvas = Color(0xFFF6F6F8),
+    graphGrid = Color(0xFFDADAE0),
     graphNodeSurface = Color(0xFFFFFFFF),
-    graphNodeSelected = Color(0xFFE7F1F9),
+    graphNodeSelected = Color(0xFFE8F2FA),
     graphEdge = Color(0xFF9CA3AF)
 )
 
 val LocalWieslerColors = staticCompositionLocalOf { DarkSemanticColors }
 val LocalIsDarkTheme = staticCompositionLocalOf { true }
+val LocalTopBarClearance = staticCompositionLocalOf { 0.dp }
 val LocalBottomBarClearance = staticCompositionLocalOf { 0.dp }
 
 private val WieslerDarkColorScheme: ColorScheme = darkColorScheme(
     primary = Color(0xFF6BA4CF),
-    onPrimary = Color(0xFF0E1419),
-    primaryContainer = Color(0xFF1C2D3B),
+    onPrimary = Color(0xFF0C1217),
+    primaryContainer = Color(0xFF1B2A36),
     onPrimaryContainer = Color(0xFFCAE1F2),
-    secondary = Color(0xFFD4D4D4),
-    onSecondary = Color(0xFF141414),
-    secondaryContainer = Color(0xFF242424),
-    onSecondaryContainer = Color(0xFFECECEC),
-    tertiary = Color(0xFF9E9E9E),
-    onTertiary = Color(0xFF141414),
-    tertiaryContainer = Color(0xFF262626),
-    onTertiaryContainer = Color(0xFFE0E0E0),
-    error = Color(0xFFDF6C6C),
+    secondary = Color(0xFFD8D8DC),
+    onSecondary = Color(0xFF121214),
+    secondaryContainer = Color(0xFF222226),
+    onSecondaryContainer = Color(0xFFECECEF),
+    tertiary = Color(0xFF9A9AA0),
+    onTertiary = Color(0xFF121214),
+    tertiaryContainer = Color(0xFF242428),
+    onTertiaryContainer = Color(0xFFE0E0E4),
+    error = Color(0xFFE57373),
     onError = Color(0xFF240909),
     errorContainer = Color(0xFF3A1B1B),
     onErrorContainer = Color(0xFFFFD8D8),
-    background = Color(0xFF101010),
-    onBackground = Color(0xFFECECEC),
-    surface = Color(0xFF101010),
-    onSurface = Color(0xFFECECEC),
-    surfaceVariant = Color(0xFF1E1E1E),
-    onSurfaceVariant = Color(0xFF8C8C8C),
-    surfaceContainerLowest = Color(0xFF131313),
-    surfaceContainerLow = Color(0xFF181818),
-    surfaceContainer = Color(0xFF1B1B1B),
-    surfaceContainerHigh = Color(0xFF222222),
-    surfaceContainerHighest = Color(0xFF2B2B2B),
-    outline = Color(0xFF383838),
-    outlineVariant = Color(0xFF262626)
+    background = Color(0xFF0C0C0D),
+    onBackground = Color(0xFFF2F2F4),
+    surface = Color(0xFF0C0C0D),
+    onSurface = Color(0xFFF2F2F4),
+    surfaceVariant = Color(0xFF1C1C1F),
+    onSurfaceVariant = Color(0xFF94949B),
+    surfaceContainerLowest = Color(0xFF111113),
+    surfaceContainerLow = Color(0xFF151517),
+    surfaceContainer = Color(0xFF18181B),
+    surfaceContainerHigh = Color(0xFF202024),
+    surfaceContainerHighest = Color(0xFF2C2C32),
+    outline = Color(0xFF44444C),
+    outlineVariant = Color(0xFF242429)
 )
 
 private val WieslerLightColorScheme: ColorScheme = lightColorScheme(
-    primary = Color(0xFF2B7AB8),
+    primary = Color(0xFF226BA5),
     onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFE2EFF8),
+    primaryContainer = Color(0xFFE4F0F9),
     onPrimaryContainer = Color(0xFF10324D),
-    secondary = Color(0xFF262626),
+    secondary = Color(0xFF222226),
     onSecondary = Color(0xFFFFFFFF),
-    secondaryContainer = Color(0xFFEBEBEB),
-    onSecondaryContainer = Color(0xFF171717),
-    tertiary = Color(0xFF595959),
+    secondaryContainer = Color(0xFFECECF0),
+    onSecondaryContainer = Color(0xFF161618),
+    tertiary = Color(0xFF55555C),
     onTertiary = Color(0xFFFFFFFF),
-    tertiaryContainer = Color(0xFFECECEC),
-    onTertiaryContainer = Color(0xFF262626),
-    error = Color(0xFFC93B3B),
+    tertiaryContainer = Color(0xFFECECF0),
+    onTertiaryContainer = Color(0xFF222226),
+    error = Color(0xFFC43434),
     onError = Color(0xFFFFFFFF),
     errorContainer = Color(0xFFFCE8E8),
     onErrorContainer = Color(0xFF5C1515),
-    background = Color(0xFFF3F3F3),
-    onBackground = Color(0xFF171717),
-    surface = Color(0xFFF3F3F3),
-    onSurface = Color(0xFF171717),
-    surfaceVariant = Color(0xFFECECEC),
-    onSurfaceVariant = Color(0xFF6B6B6B),
-    surfaceContainerLowest = Color(0xFFF6F6F6),
+    background = Color(0xFFF4F4F6),
+    onBackground = Color(0xFF141416),
+    surface = Color(0xFFF4F4F6),
+    onSurface = Color(0xFF141416),
+    surfaceVariant = Color(0xFFECECF0),
+    onSurfaceVariant = Color(0xFF63636A),
+    surfaceContainerLowest = Color(0xFFF6F6F8),
     surfaceContainerLow = Color(0xFFFFFFFF),
     surfaceContainer = Color(0xFFFFFFFF),
-    surfaceContainerHigh = Color(0xFFF0F0F0),
-    surfaceContainerHighest = Color(0xFFE5E5E5),
-    outline = Color(0xFFC8C8C8),
-    outlineVariant = Color(0xFFE4E4E4)
+    surfaceContainerHigh = Color(0xFFF1F1F4),
+    surfaceContainerHighest = Color(0xFFE4E4EA),
+    outline = Color(0xFFB4B4BE),
+    outlineVariant = Color(0xFFE6E6EC)
 )
 
 private val ExpressiveShapes = Shapes(
-    extraSmall = RoundedCornerShape(10.dp),
-    small = RoundedCornerShape(14.dp),
-    medium = RoundedCornerShape(20.dp),
-    large = RoundedCornerShape(26.dp),
-    extraLarge = RoundedCornerShape(32.dp)
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(10.dp),
+    medium = RoundedCornerShape(14.dp),
+    large = RoundedCornerShape(18.dp),
+    extraLarge = RoundedCornerShape(24.dp)
 )
 
+// 严格收敛字阶：主体仅保留 17sp（区块标题）、14.5sp（正文/子标题）、13sp（辅助元数据）三档，无小于 13sp 文本。
+// Strict 3-step body type scale (17sp / 14.5sp / 13sp) with zero <13sp text; display/headline reserved for page & hero.
 private val ExpressiveTypography = Typography(
     displaySmall = TextStyle(
         fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Bold,
-        fontSize = 32.sp,
-        lineHeight = 38.sp,
-        letterSpacing = (-0.5).sp
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 34.sp,
+        lineHeight = 40.sp,
+        letterSpacing = (-0.8).sp
     ),
     headlineMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Bold,
+        fontWeight = FontWeight.SemiBold,
         fontSize = 26.sp,
         lineHeight = 32.sp,
-        letterSpacing = (-0.3).sp
+        letterSpacing = (-0.5).sp
     ),
     headlineSmall = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 21.sp,
-        lineHeight = 27.sp
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
+        letterSpacing = (-0.3).sp
     ),
     titleLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 18.sp,
-        lineHeight = 24.sp
+        fontSize = 17.sp,
+        lineHeight = 23.sp,
+        letterSpacing = (-0.15).sp
     ),
     titleMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 15.sp,
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.5.sp,
         lineHeight = 21.sp
+    ),
+    titleSmall = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.5.sp,
+        lineHeight = 20.sp
     ),
     bodyLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Normal,
-        fontSize = 15.sp,
+        fontSize = 14.5.sp,
         lineHeight = 22.sp
     ),
     bodyMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Normal,
-        fontSize = 13.5.sp,
-        lineHeight = 20.sp
+        fontSize = 14.5.sp,
+        lineHeight = 21.sp
     ),
     labelLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 13.5.sp,
-        lineHeight = 18.sp
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.5.sp,
+        lineHeight = 20.sp
     ),
     labelMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Medium,
-        fontSize = 12.sp,
-        lineHeight = 16.sp
+        fontSize = 13.sp,
+        lineHeight = 18.sp
+    ),
+    labelSmall = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Medium,
+        fontSize = 13.sp,
+        lineHeight = 18.sp
     )
 )
 

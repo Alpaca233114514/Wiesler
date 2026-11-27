@@ -261,6 +261,8 @@ class RfMonitorEngine {
     private var totalFreshFrames = 0
     private var totalCachedDuplicates = 0
     private var lastDualSimEventAtMs: Long? = null
+    var version: Long = 0L
+        private set
 
     fun reset() {
         slots.clear()
@@ -268,6 +270,7 @@ class RfMonitorEngine {
         totalFreshFrames = 0
         totalCachedDuplicates = 0
         lastDualSimEventAtMs = null
+        version++
     }
 
     fun isScissorsFrame(sample: RfCellSample): Boolean {
@@ -311,6 +314,7 @@ class RfMonitorEngine {
                 slot.cachedDuplicates++
                 slot.consecutiveStalePolls++
                 totalCachedDuplicates++
+                version++
                 if (slot.consecutiveStalePolls >= STALE_FREEZE_THRESHOLD && !slot.freezeEventEmitted) {
                     slot.freezeEventEmitted = true
                     pushEvent(
@@ -334,6 +338,7 @@ class RfMonitorEngine {
         slot.lastFreshAtMs = sample.observedAtMs
         slot.latestSample = sample
         totalFreshFrames++
+        version++
 
         slot.samples.addLast(sample)
         while (slot.samples.size > MAX_SAMPLES_PER_SLOT) slot.samples.removeFirst()
@@ -447,10 +452,42 @@ class RfMonitorEngine {
     ): RfDiagnosticsSnapshot {
         val slotSummaries = slots.values.sortedBy { it.slotIndex }.map { slot ->
             pruneTransitions(slot, nowMs)
-            val recent30 = slot.samples.filter { nowMs - it.observedAtMs <= WINDOW_COINCIDENCE_MS }
-            val recent60 = slot.samples.filter { nowMs - it.observedAtMs <= WINDOW_PINGPONG_MS }
-            val scissors30 = recent30.count { isScissorsFrame(it) }
-            val syncLoss30 = recent30.count { isSyncLossFrame(it) }
+            // 单遍遍历样本窗统计 30s 告警计数并累加 Pearson 相关系数，避免每轮分配多重临时列表与 Pair。
+            // Single-pass scan over slot samples for 30s counts and 60s Pearson stats without temp Pair lists.
+            var scissors30 = 0
+            var syncLoss30 = 0
+            var corrN = 0
+            var sumX = 0.0
+            var sumY = 0.0
+            var sumXX = 0.0
+            var sumYY = 0.0
+            var sumXY = 0.0
+            for (s in slot.samples) {
+                val age = nowMs - s.observedAtMs
+                if (age <= WINDOW_COINCIDENCE_MS) {
+                    if (isScissorsFrame(s)) scissors30++
+                    if (isSyncLossFrame(s)) syncLoss30++
+                }
+                if (age <= WINDOW_PINGPONG_MS && s.rsrpDbm != null && s.sinrDb != null) {
+                    val x = s.rsrpDbm.toDouble()
+                    val y = s.sinrDb.toDouble()
+                    corrN++
+                    sumX += x
+                    sumY += y
+                    sumXX += x * x
+                    sumYY += y * y
+                    sumXY += x * y
+                }
+            }
+            val corr: Double? = if (corrN >= 4) {
+                val num = corrN * sumXY - sumX * sumY
+                val varX = corrN * sumXX - sumX * sumX
+                val varY = corrN * sumYY - sumY * sumY
+                val denom = sqrt(varX.coerceAtLeast(0.0) * varY.coerceAtLeast(0.0))
+                if (denom <= 1e-9) null else (num / denom).coerceIn(-1.0, 1.0)
+            } else {
+                null
+            }
             val pingPong60 = slot.transitions.size
             val flags = LinkedHashSet<RfAnomalyKind>()
             val hasConfirmedScissors = slot.lastScissorsAlertAtMs != null &&
@@ -466,11 +503,21 @@ class RfMonitorEngine {
             if (frozen) flags.add(RfAnomalyKind.CACHE_FREEZE)
 
             val latest = slot.latestSample
-            val corr = pearsonCorrelation(
-                recent60.mapNotNull { s ->
-                    if (s.rsrpDbm != null && s.sinrDb != null) s.rsrpDbm.toDouble() to s.sinrDb.toDouble() else null
-                }
-            )
+            val sampleCount = slot.samples.size
+            val trendStart = (sampleCount - 40).coerceAtLeast(0)
+            val trendList = ArrayList<RfTrendPoint>(sampleCount - trendStart)
+            for (i in trendStart until sampleCount) {
+                val s = slot.samples[i]
+                trendList.add(
+                    RfTrendPoint(
+                        observedAtMs = s.observedAtMs,
+                        rsrpDbm = s.rsrpDbm,
+                        sinrDb = s.sinrDb,
+                        rsrqDb = s.rsrqDb,
+                        flagged = isScissorsFrame(s) || isSyncLossFrame(s)
+                    )
+                )
+            }
             RfSlotSummary(
                 slotIndex = slot.slotIndex,
                 subId = slot.subId,
@@ -494,15 +541,7 @@ class RfMonitorEngine {
                 rsrpSinrCorrelation = corr,
                 activeFlags = flags,
                 lastFreshAtMs = slot.lastFreshAtMs,
-                trend = slot.samples.takeLast(40).map { s ->
-                    RfTrendPoint(
-                        observedAtMs = s.observedAtMs,
-                        rsrpDbm = s.rsrpDbm,
-                        sinrDb = s.sinrDb,
-                        rsrqDb = s.rsrqDb,
-                        flagged = isScissorsFrame(s) || isSyncLossFrame(s)
-                    )
-                }
+                trend = trendList
             )
         }
 

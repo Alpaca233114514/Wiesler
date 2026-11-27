@@ -31,11 +31,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Android 主动多卡蜂窝射频采集器（无需 root）：
- * - 按 3 秒节拍对每张在位 SIM 主动触发 TelephonyManager.requestCellInfoUpdate()，绕过息屏/缓存冻结；
- * - 并行注册 SignalStrengthsListener 与 ServiceStateListener 捕获瞬时信号跌落与 OUT_OF_SERVICE；
- * - 监听蜂窝 NetworkCapabilities.NET_CAPABILITY_VALIDATED / onLost 作为协议栈停滞与断链辅助信号。
+ * - 优先消费系统推送的 SignalStrengthsListener / ServiceStateListener / CellInfoListener（API 31+）；
+ * - 按自适应节拍触发 requestCellInfoUpdate()，平稳期降频省电并在已有新鲜回调时跳过冗余唤醒，检测到异常自动提速；
+ * - 对瞬时重复信号回调与未变化的蜂窝校验状态做去抖过滤，减少主线程与 UI 重组负担。
  *
- * Active multi-SIM RF collector using requestCellInfoUpdate, TelephonyCallback, and cellular NetworkCallback.
+ * Adaptive multi-SIM RF collector prioritizing event-driven telephony callbacks with anomaly-aware active polling.
  */
 class RfCellularCollector(
     private val context: Context,
@@ -45,7 +45,10 @@ class RfCellularCollector(
     private val onStatusError: (String) -> Unit
 ) {
     companion object {
-        const val POLL_INTERVAL_MS = 3_000L
+        const val POLL_INTERVAL_MS = 6_000L
+        const val MIN_POLL_INTERVAL_MS = 3_000L
+        private const val SIGNAL_DEDUP_WINDOW_MS = 1_500L
+        private const val FORCE_CELLINFO_STALE_MS = 18_000L
         val REQUIRED_PERMISSIONS = arrayOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.READ_PHONE_STATE
@@ -56,15 +59,26 @@ class RfCellularCollector(
         }
     }
 
+    private data class SignalFingerprint(
+        val rat: RfRat,
+        val rsrpDbm: Int?,
+        val rsrqDb: Int?,
+        val sinrDb: Int?,
+        val inService: Boolean
+    )
+
     private data class SlotBinding(
         val slotIndex: Int,
         val subId: Int,
         val operatorName: String,
         val plmn: String,
         val manager: TelephonyManager,
-        var lastArfcn: Int? = null,
-        var lastCa: Boolean = false,
-        var lastInService: Boolean = true,
+        @Volatile var lastArfcn: Int? = null,
+        @Volatile var lastCa: Boolean = false,
+        @Volatile var lastInService: Boolean = true,
+        @Volatile var lastCellInfoAtMs: Long = 0L,
+        @Volatile var lastSignalAtMs: Long = 0L,
+        @Volatile var lastSignalFingerprint: SignalFingerprint? = null,
         var callback31: Any? = null,
         @Suppress("DEPRECATION") var legacyListener: PhoneStateListener? = null
     )
@@ -73,16 +87,40 @@ class RfCellularCollector(
     private val running = AtomicBoolean(false)
     private val bindings = mutableListOf<SlotBinding>()
     private var cellularNetworkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var steadyPollIntervalMs: Long = POLL_INTERVAL_MS
+    @Volatile private var escalatedPollIntervalMs: Long = MIN_POLL_INTERVAL_MS
+    @Volatile private var anomalyEscalated: Boolean = false
+    @Volatile private var lastReportedValidated: Boolean? = null
+
+    private fun effectivePollIntervalMs(): Long =
+        (if (anomalyEscalated) escalatedPollIntervalMs else steadyPollIntervalMs)
+            .coerceAtLeast(MIN_POLL_INTERVAL_MS)
 
     private val pollRunnable = object : Runnable {
         override fun run() {
             if (!running.get()) return
             pollAllSlots()
-            mainHandler.postDelayed(this, POLL_INTERVAL_MS)
+            mainHandler.postDelayed(this, effectivePollIntervalMs())
         }
     }
 
     val isRunning: Boolean get() = running.get()
+
+    fun updateCadence(steadyMs: Long, escalatedMs: Long) {
+        steadyPollIntervalMs = steadyMs.coerceAtLeast(MIN_POLL_INTERVAL_MS)
+        escalatedPollIntervalMs = escalatedMs.coerceAtLeast(MIN_POLL_INTERVAL_MS)
+    }
+
+    fun setAnomalyEscalated(escalated: Boolean) {
+        if (anomalyEscalated == escalated) return
+        anomalyEscalated = escalated
+        if (running.get() && escalated) {
+            // 检测到异常立即切回高频主动刷新，避免错过干扰窗口。
+            // Reschedule immediately on anomaly escalation so interference bursts are never missed.
+            mainHandler.removeCallbacks(pollRunnable)
+            mainHandler.postDelayed(pollRunnable, 400L)
+        }
+    }
 
     @SuppressLint("MissingPermission")
     fun start(): Boolean {
@@ -144,12 +182,22 @@ class RfCellularCollector(
         bindings.forEach { unregisterTelephonyListeners(it) }
         bindings.clear()
         unregisterCellularLinkMonitor()
+        lastReportedValidated = null
     }
 
     @SuppressLint("MissingPermission")
     private fun pollAllSlots() {
         if (!running.get() || !hasPermissions(context)) return
+        val nowMs = System.currentTimeMillis()
+        val intervalMs = effectivePollIntervalMs()
         for (binding in bindings.toList()) {
+            // 非异常提速期间，若系统推送回调已在近期回传新鲜数据且频点已知，则跳过本次主动基带唤醒以降低射频功耗。
+            // When not escalated, skip redundant modem wakeup if a fresh callback arrived recently and ARFCN is known.
+            val recentSignal = binding.lastSignalAtMs > 0L && (nowMs - binding.lastSignalAtMs) < (intervalMs * 6L / 10L)
+            val recentCellInfo = binding.lastCellInfoAtMs > 0L && (nowMs - binding.lastCellInfoAtMs) < FORCE_CELLINFO_STALE_MS
+            if (!anomalyEscalated && recentSignal && recentCellInfo && binding.lastArfcn != null) {
+                continue
+            }
             runCatching {
                 binding.manager.requestCellInfoUpdate(executor, object : TelephonyManager.CellInfoCallback() {
                     override fun onCellInfo(cellInfo: MutableList<CellInfo>) {
@@ -174,6 +222,7 @@ class RfCellularCollector(
 
     private fun handleCellInfoList(binding: SlotBinding, list: List<CellInfo>) {
         val nowMs = System.currentTimeMillis()
+        binding.lastCellInfoAtMs = nowMs
         val registered = list.filter { it.isRegistered }
         val primary = registered.firstOrNull { it is CellInfoNr }
             ?: registered.firstOrNull { it is CellInfoLte }
@@ -311,6 +360,17 @@ class RfCellularCollector(
             )
             else -> return
         }
+        // 在后台线程过滤 1.5 秒内指标完全一致的突发重复信号回调，避免频繁唤醒主线程与 UI 重组。
+        // Coalesce identical bursty SignalStrength callbacks within 1.5s off the main thread.
+        val fingerprint = SignalFingerprint(sample.rat, sample.rsrpDbm, sample.rsrqDb, sample.sinrDb, sample.inService)
+        if (!anomalyEscalated &&
+            binding.lastSignalFingerprint == fingerprint &&
+            (nowMs - binding.lastSignalAtMs) < SIGNAL_DEDUP_WINDOW_MS
+        ) {
+            return
+        }
+        binding.lastSignalFingerprint = fingerprint
+        binding.lastSignalAtMs = nowMs
         onSample(sample)
     }
 
@@ -346,13 +406,19 @@ class RfCellularCollector(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val cb = object : TelephonyCallback(),
                 TelephonyCallback.SignalStrengthsListener,
-                TelephonyCallback.ServiceStateListener {
+                TelephonyCallback.ServiceStateListener,
+                TelephonyCallback.CellInfoListener {
                 override fun onSignalStrengthsChanged(signalStrength: SignalStrength) {
                     handleSignalStrength(binding, signalStrength)
                 }
 
                 override fun onServiceStateChanged(serviceState: ServiceState) {
                     handleServiceState(binding, serviceState)
+                }
+
+                override fun onCellInfoChanged(cellInfo: MutableList<CellInfo>) {
+                    if (!running.get() || cellInfo.isEmpty()) return
+                    handleCellInfoList(binding, cellInfo)
                 }
             }
             runCatching {
@@ -410,10 +476,13 @@ class RfCellularCollector(
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
                 val validated = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                if (lastReportedValidated == validated) return
+                lastReportedValidated = validated
                 onCellularLinkState(validated, if (validated) null else System.currentTimeMillis())
             }
 
             override fun onLost(network: Network) {
+                lastReportedValidated = false
                 onCellularLinkState(false, System.currentTimeMillis())
             }
         }

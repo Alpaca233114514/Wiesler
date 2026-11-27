@@ -53,21 +53,26 @@ data class StudioFlow(
     val tx: Double? = null,
     val event: String? = null
 ) {
-    val hostKey: String get() = host.lowercase(Locale.ROOT).trimEnd('.')
-    val flowKey: String get() = "$id\u0000$start"
-    val destinationPort: String
-        get() {
-            val idx = destination.lastIndexOf(':')
-            return if (idx >= 0 && idx + 1 < destination.length) destination.substring(idx + 1) else "?"
-        }
+    // 缓存高频衍生字段，避免每秒筛选/计数阶段重复 split 与字符串分配。
+    // Cache hot derived properties to avoid repeated split/list allocations per tick.
+    val hostKey: String = host.lowercase(Locale.ROOT).trimEnd('.')
+    val flowKey: String = "$id\u0000$start"
+    val destinationPort: String = run {
+        val idx = destination.lastIndexOf(':')
+        if (idx >= 0 && idx + 1 < destination.length) destination.substring(idx + 1) else "?"
+    }
+    val exitNode: String? = run {
+        val sep = route.indexOf(" → ")
+        val first = (if (sep >= 0) route.substring(0, sep) else route).trim()
+        first.takeIf { it.isNotEmpty() && it != "未知" }
+    }
+    val routing: FlowRouting = when {
+        exitNode == null -> FlowRouting.UNKNOWN
+        exitNode.equals("DIRECT", ignoreCase = true) -> FlowRouting.DIRECT
+        else -> FlowRouting.PROXY
+    }
     val chainList: List<String>
         get() = route.split(" → ").map { it.trim() }.filter { it.isNotEmpty() && it != "未知" }
-    val exitNode: String? get() = chainList.firstOrNull()
-    val routing: FlowRouting
-        get() {
-            val first = exitNode ?: return FlowRouting.UNKNOWN
-            return if (first.equals("DIRECT", ignoreCase = true)) FlowRouting.DIRECT else FlowRouting.PROXY
-        }
 
     fun formattedRawJson(): String {
         if (raw.isNotBlank()) {
@@ -103,7 +108,26 @@ data class StudioFrame(
     val uploadTotal: Long? = null,
     val rxTotal: Double? = null,
     val txTotal: Double? = null
-)
+) {
+    // 构造帧时单遍统计直连/代理连接数，避免 UI 与发布循环重复遍历。
+    // Precompute routing counts once per frame instead of rescanning flows on every UI publish.
+    val directCount: Int
+    val proxyCount: Int
+
+    init {
+        var d = 0
+        var p = 0
+        for (flow in flows) {
+            when (flow.routing) {
+                FlowRouting.DIRECT -> d++
+                FlowRouting.PROXY -> p++
+                FlowRouting.UNKNOWN -> Unit
+            }
+        }
+        directCount = d
+        proxyCount = p
+    }
+}
 
 class StudioSession {
     var live = false

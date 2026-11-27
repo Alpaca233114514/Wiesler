@@ -75,4 +75,17 @@ class StudioModelTest {
         assertEquals("example.com:?", studioEndpoint("example.com", "-1"))
         assertEquals("未知:?", studioEndpoint("", ""))
     }
+
+    @Test fun framePrecomputesDirectAndProxyCountsAndCachesExitNode() {
+        val demo = studioDemo(0)
+        val frame = StudioFrame(1000L, 2000L, demo)
+        assertEquals(2, frame.directCount)
+        assertEquals(3, frame.proxyCount)
+        assertEquals("WireGuard-demo", demo[0].exitNode)
+        assertEquals(FlowRouting.PROXY, demo[0].routing)
+        assertEquals("DIRECT", demo[3].exitNode)
+        assertEquals(FlowRouting.DIRECT, demo[3].routing)
+        assertEquals(MonitorPerformanceMode.BALANCED, MonitorPerformanceMode.fromCode("unknown"))
+        assertEquals(MonitorPerformanceMode.ECO, MonitorPerformanceMode.fromCode("eco"))
+    }
 }

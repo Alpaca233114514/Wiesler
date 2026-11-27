@@ -32,7 +32,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -47,11 +46,8 @@ import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -59,7 +55,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -97,7 +92,6 @@ import io.wiesler.android.StudioSourceFilter
 import io.wiesler.android.formatBytes
 import io.wiesler.android.formatRate
 import io.wiesler.android.routePath
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -128,7 +122,7 @@ private class GraphHitState {
     var edges: List<Triple<StudioFlow, Offset, Offset>> = emptyList()
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GraphWorkbenchScreen(
     state: WieslerUiState,
@@ -148,6 +142,10 @@ fun GraphWorkbenchScreen(
     var inspectFlowId by remember { mutableStateOf<String?>(null) }
     var showGraphInfo by remember { mutableStateOf(false) }
 
+    var zoom by remember { mutableFloatStateOf(1f) }
+    var pan by remember { mutableStateOf(Offset.Zero) }
+    val customPositions = remember { mutableStateMapOf<String, Offset>() }
+
     val semantic = LocalWieslerColors.current
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.ROOT) }
     val selectedFlow = state.studioFilteredFlows.firstOrNull { it.id == (inspectFlowId ?: state.studioSelectedId) }
@@ -155,38 +153,40 @@ fun GraphWorkbenchScreen(
         state.studioFilteredFlows.take(displayLimit)
     }
 
+    val topClearance = LocalTopBarClearance.current
     val bottomClearance = LocalBottomBarClearance.current
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp + bottomClearance),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        contentPadding = PaddingValues(
+            start = 18.dp,
+            end = 18.dp,
+            top = topClearance + 12.dp,
+            bottom = bottomClearance + 16.dp
+        ),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item(key = "header") {
             ExpressivePageHeader(
-                kicker = "STUDIO WORKBENCH",
                 title = "连接图谱",
-                subtitle = if (state.studioLive) state.connectionState else "本地演示模式 · 不发起测试流量",
                 trailing = {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        FilledTonalIconButton(onClick = onToggleCapturePause) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        IconButton(onClick = onToggleCapturePause) {
                             Icon(
                                 imageVector = if (state.capturePaused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
-                                contentDescription = if (state.capturePaused) "恢复采集" else "暂停采集"
+                                contentDescription = if (state.capturePaused) "恢复采集" else "暂停采集",
+                                tint = MaterialTheme.colorScheme.onSurface
                             )
                         }
-                        FilledTonalIconButton(onClick = onOpenControllerDialog) {
-                            Icon(Icons.Rounded.Tune, contentDescription = "配置控制器")
+                        IconButton(onClick = onOpenControllerDialog) {
+                            Icon(
+                                Icons.Rounded.Tune,
+                                contentDescription = "配置控制器",
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
                         }
                     }
                 }
-            )
-        }
-
-        item(key = "egress") {
-            EgressComparisonBanner(
-                egress = state.egress,
-                controllerEnabled = state.controllerEnabled,
-                onRefresh = onRefreshEgress
             )
         }
 
@@ -202,7 +202,7 @@ fun GraphWorkbenchScreen(
         }
 
         item(key = "graph_card") {
-            ExpressiveSectionCard(containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+            ExpressiveSectionCard(contentSpacing = 12) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -212,30 +212,40 @@ fun GraphWorkbenchScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("拓扑画布", style = MaterialTheme.typography.titleLarge)
+                        Text("拓扑", style = MaterialTheme.typography.titleLarge)
                         val drawnCount = state.studioHostGroups.sumOf { it.flows.size }
-                        StatusPill(
-                            text = "$drawnCount / ${state.studioFilteredFlows.size} 条",
-                            containerColor = MaterialTheme.colorScheme.primaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        Text(
+                            text = "$drawnCount/${state.studioFilteredFlows.size}",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
                         FilledTonalButton(
                             onClick = onToggleFreeze,
                             enabled = state.studioCurrentFrame != null,
+                            colors = wieslerSecondaryButtonColors(),
+                            shape = MaterialTheme.shapes.small,
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.AcUnit,
                                 contentDescription = null,
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(if (state.studioFrozen) "继续" else "冻结")
                         }
-                        IconButton(onClick = { showGraphInfo = true }) {
-                            Icon(Icons.Rounded.Info, contentDescription = "关于图谱")
+                        IconButton(
+                            onClick = { showGraphInfo = true },
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                Icons.Rounded.Info,
+                                contentDescription = "说明",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
                     }
                 }
@@ -244,10 +254,15 @@ fun GraphWorkbenchScreen(
                     groups = state.studioHostGroups,
                     selectedId = state.studioSelectedId,
                     animatePulses = state.preferences.pulseAnimation && !state.studioFrozen && !state.capturePaused,
+                    zoom = zoom,
+                    pan = pan,
+                    customPositions = customPositions,
+                    onZoomChange = { zoom = it },
+                    onPanChange = { pan = it },
                     emptyMessage = state.studioCurrentFrame?.error ?: when {
-                        state.studioCurrentFrame == null && state.studioLive -> "连接手机 Mihomo 控制器后查看实时连接图谱"
-                        state.studioCurrentFrame?.flows?.isNotEmpty() == true -> "当前筛选条件下没有匹配的会话"
-                        else -> "当前没有活跃连接"
+                        state.studioCurrentFrame == null && state.studioLive -> "未连接控制器"
+                        state.studioCurrentFrame?.flows?.isNotEmpty() == true -> "无匹配会话"
+                        else -> "暂无活跃连接"
                     },
                     onSelectFlow = { flow ->
                         onSelectFlow(flow.id)
@@ -255,46 +270,79 @@ fun GraphWorkbenchScreen(
                     }
                 )
 
+                // 图例、缩放按钮与时间同行对齐，画布内零悬浮遮挡。
+                // Legend, zoom icons, and timestamp aligned on one clean footer row with zero canvas overlap.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        LegendDot("上传 →", semantic.upload)
-                        LegendDot("← 下载", semantic.download)
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        LegendDot("上传", semantic.upload)
+                        LegendDot("下载", semantic.download)
                     }
-                    Text(
-                        text = state.studioCurrentFrame?.let {
-                            (if (state.studioFrozen) "回放 · " else "现在 · ") + timeFormat.format(Date(it.wallTime))
-                        } ?: "尚无快照",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = { zoom = (zoom * 0.85f).coerceIn(0.65f, 2.2f) },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Rounded.Remove, contentDescription = "缩小", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        IconButton(
+                            onClick = { zoom = 1f; pan = Offset.Zero; customPositions.clear() },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Rounded.CenterFocusStrong, contentDescription = "适配", modifier = Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        IconButton(
+                            onClick = { zoom = (zoom * 1.2f).coerceIn(0.65f, 2.2f) },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Rounded.Add, contentDescription = "放大", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = state.studioCurrentFrame?.let {
+                                (if (state.studioFrozen) "回放 " else "") + timeFormat.format(Date(it.wallTime))
+                            } ?: "—",
+                            style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    FilledTonalButton(
-                        onClick = onBackToNow,
-                        enabled = state.studioFrozen,
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                if (state.studioFrameCount > 1) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Text("回到现在")
+                        val maxIndex = (state.studioFrameCount - 1).coerceAtLeast(1)
+                        MinimalScrubber(
+                            value = state.studioFrameIndex.coerceIn(0, maxIndex),
+                            maxValue = maxIndex,
+                            onValueChange = onReplayIndex,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (state.studioFrozen) {
+                            TextButton(
+                                onClick = onBackToNow,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text("现在")
+                            }
+                        }
                     }
-                    val maxIndex = (state.studioFrameCount - 1).coerceAtLeast(0)
-                    Slider(
-                        value = state.studioFrameIndex.coerceIn(0, maxIndex).toFloat(),
-                        onValueChange = { onReplayIndex(it.toInt()) },
-                        valueRange = 0f..maxIndex.coerceAtLeast(1).toFloat(),
-                        enabled = state.studioFrameCount > 1,
-                        modifier = Modifier.weight(1f)
-                    )
                 }
             }
+        }
+
+        item(key = "egress") {
+            EgressComparisonBanner(
+                egress = state.egress,
+                controllerEnabled = state.controllerEnabled,
+                onRefresh = onRefreshEgress
+            )
         }
 
         item(key = "filters") {
@@ -304,31 +352,31 @@ fun GraphWorkbenchScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("活跃会话", style = MaterialTheme.typography.headlineSmall)
+                    Text("会话", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        text = "${state.studioFilteredFlows.size} 条匹配",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
+                        text = "${state.studioFilteredFlows.size}",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 OutlinedTextField(
                     value = state.studioQuery,
                     onValueChange = onQueryChange,
-                    placeholder = { Text("搜索应用、域名、IP、端口或规则…") },
+                    placeholder = { Text("搜索应用、域名、IP 或规则") },
                     leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
                     trailingIcon = {
                         if (state.studioQuery.isNotEmpty()) {
                             IconButton(onClick = { onQueryChange("") }) {
-                                Icon(Icons.Rounded.Close, contentDescription = "清除搜索")
+                                Icon(Icons.Rounded.Close, contentDescription = "清除")
                             }
                         }
                     },
                     singleLine = true,
-                    shape = CircleShape,
+                    shape = MaterialTheme.shapes.medium,
                     modifier = Modifier.fillMaxWidth()
                 )
                 ExpressiveConnectedChoiceRow(
-                    options = listOf("全部" to "全部协议", "TCP" to "TCP", "UDP" to "UDP"),
+                    options = listOf("全部" to "全部", "TCP" to "TCP", "UDP" to "UDP"),
                     selected = state.studioProtocol,
                     onSelect = onProtocolChange
                 )
@@ -346,9 +394,9 @@ fun GraphWorkbenchScreen(
                 ExpressiveSectionCard {
                     Text(
                         text = if (state.studioCurrentFrame == null && state.studioLive) {
-                            "尚未取得控制器快照，点击右上角调谐图标或前往「设置」自动扫描本机 Mihomo。"
+                            "前往设置连接 Mihomo 控制器后查看实时会话"
                         } else {
-                            "当前筛选条件下没有匹配的活跃会话。"
+                            "无匹配会话"
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -371,9 +419,11 @@ fun GraphWorkbenchScreen(
                 item(key = "load_more") {
                     FilledTonalButton(
                         onClick = { displayLimit = (displayLimit + 30).coerceAtMost(200) },
+                        colors = wieslerSecondaryButtonColors(),
+                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("显示更多会话（已展示 ${shownFlows.size} / ${state.studioFilteredFlows.size}）")
+                        Text("加载更多 (${shownFlows.size}/${state.studioFilteredFlows.size})")
                     }
                 }
             }
@@ -398,11 +448,11 @@ fun GraphWorkbenchScreen(
     if (showGraphInfo) {
         AlertDialog(
             onDismissRequest = { showGraphInfo = false },
-            title = { Text("连接图谱说明") },
+            title = { Text("拓扑说明") },
             text = {
                 Text(
-                    "同域名不同端口会自动堆叠为一个目标节点，点击后可在检查器顶部切换具体连接。\n\n" +
-                        "实时模式仅向本机或已验证 Mihomo 控制器发送只读 GET；脉冲粒子反映连续快照的字节增量而非单个数据包。冻结仅定格画布，后台继续采集最近 60 帧；点击右上角暂停按钮可停止采集。"
+                    "同域名不同端口自动堆叠为单一目标节点，点击可在检查器内切换连接。\n\n" +
+                        "实时模式仅向控制器发送只读 GET；冻结定格画布的同时后台保留最近 60 帧。"
                 )
             },
             confirmButton = { TextButton(onClick = { showGraphInfo = false }) { Text("知道了") } }
@@ -415,6 +465,11 @@ private fun InteractiveHostGraphCanvas(
     groups: List<StudioHostGroup>,
     selectedId: String?,
     animatePulses: Boolean,
+    zoom: Float,
+    pan: Offset,
+    customPositions: MutableMap<String, Offset>,
+    onZoomChange: (Float) -> Unit,
+    onPanChange: (Offset) -> Unit,
     emptyMessage: String,
     onSelectFlow: (StudioFlow) -> Unit
 ) {
@@ -424,329 +479,288 @@ private fun InteractiveHostGraphCanvas(
     val primaryColor = MaterialTheme.colorScheme.primary
     val borderColor = MaterialTheme.colorScheme.outlineVariant
 
-    var zoom by remember { mutableFloatStateOf(1f) }
-    var pan by remember { mutableStateOf(Offset.Zero) }
-    val customPositions = remember { mutableStateMapOf<String, Offset>() }
-
-    // 复用 Paint 与 Typeface，避免绘制阶段重复创建原生字体句柄。
-    // Reuse Paint and Typeface across draws instead of recreating native font handles per frame.
     val titleTypeface = remember { Typeface.create("sans-serif-medium", Typeface.NORMAL) }
     val titlePaint = remember(titleTypeface) {
         Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = titleTypeface }
     }
     val subPaint = remember { Paint(Paint.ANTI_ALIAS_FLAG) }
 
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            FilledTonalIconButton(
-                onClick = { zoom = (zoom * 0.85f).coerceIn(0.65f, 2.2f) },
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(Icons.Rounded.Remove, contentDescription = "缩小图谱", modifier = Modifier.size(18.dp))
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(330.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .background(semantic.graphCanvas)
+            .border(0.5.dp, borderColor, MaterialTheme.shapes.medium)
+    ) {
+        if (groups.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                Text(emptyMessage, style = MaterialTheme.typography.bodyMedium, color = mutedColor)
             }
-            Spacer(modifier = Modifier.width(6.dp))
-            FilledTonalButton(
-                onClick = { zoom = 1f; pan = Offset.Zero; customPositions.clear() },
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-            ) {
-                Icon(Icons.Rounded.CenterFocusStrong, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("适配")
-            }
-            Spacer(modifier = Modifier.width(6.dp))
-            FilledTonalIconButton(
-                onClick = { zoom = (zoom * 1.2f).coerceIn(0.65f, 2.2f) },
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(Icons.Rounded.Add, contentDescription = "放大图谱", modifier = Modifier.size(18.dp))
-            }
-        }
+        } else {
+            // 使用普通引用保存命中几何，严禁在 Canvas.onDraw 内写 mutableStateOf 引发无限重绘。
+            // Keep hit-test geometry in a plain holder so Canvas.onDraw never mutates Compose State.
+            val hitState = remember { GraphHitState() }
+            var pulseEdges by remember { mutableStateOf<List<PulseEdge>>(emptyList()) }
+            var draggingKey by remember { mutableStateOf<String?>(null) }
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(340.dp)
-                .clip(MaterialTheme.shapes.medium)
-                .background(semantic.graphCanvas)
-                .border(1.dp, borderColor, MaterialTheme.shapes.medium)
-        ) {
-            if (groups.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                    Text(emptyMessage, style = MaterialTheme.typography.bodyMedium, color = mutedColor)
-                }
-            } else {
-                // 使用普通引用保存命中几何，严禁在 Canvas.onDraw 内写 mutableStateOf 引发无限重绘。
-                // Keep hit-test geometry in a plain holder so Canvas.onDraw never mutates Compose State.
-                val hitState = remember { GraphHitState() }
-                var pulseEdges by remember { mutableStateOf<List<PulseEdge>>(emptyList()) }
-                var draggingKey by remember { mutableStateOf<String?>(null) }
-
-                Canvas(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(groups, selectedId) {
-                            detectTapGestures { tap ->
-                                val world = Offset((tap.x - pan.x) / zoom, (tap.y - pan.y) / zoom)
-                                val hitNode = hitState.nodes.lastOrNull { it.rect.contains(world) }
-                                if (hitNode != null) {
-                                    onSelectFlow(hitNode.leader)
-                                    return@detectTapGestures
-                                }
-                                var bestFlow: StudioFlow? = null
-                                var bestDist = 36f
-                                for ((flow, start, end) in hitState.edges) {
-                                    for (step in 0..16) {
-                                        val t = step / 16f
-                                        val pt = cubicPoint(start, end, t)
-                                        val d = hypot(pt.x - world.x, pt.y - world.y)
-                                        if (d < bestDist) {
-                                            bestDist = d
-                                            bestFlow = flow
-                                        }
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(groups, selectedId, zoom, pan) {
+                        detectTapGestures { tap ->
+                            val world = Offset((tap.x - pan.x) / zoom, (tap.y - pan.y) / zoom)
+                            val hitNode = hitState.nodes.lastOrNull { it.rect.contains(world) }
+                            if (hitNode != null) {
+                                onSelectFlow(hitNode.leader)
+                                return@detectTapGestures
+                            }
+                            var bestFlow: StudioFlow? = null
+                            var bestDist = 36f
+                            for ((flow, start, end) in hitState.edges) {
+                                for (step in 0..16) {
+                                    val t = step / 16f
+                                    val pt = cubicPoint(start, end, t)
+                                    val d = hypot(pt.x - world.x, pt.y - world.y)
+                                    if (d < bestDist) {
+                                        bestDist = d
+                                        bestFlow = flow
                                     }
                                 }
-                                bestFlow?.let(onSelectFlow)
                             }
-                        }
-                        .pointerInput(groups) {
-                            detectDragGestures(
-                                onDragStart = { start ->
-                                    val world = Offset((start.x - pan.x) / zoom, (start.y - pan.y) / zoom)
-                                    draggingKey = hitState.nodes.lastOrNull { it.rect.contains(world) }?.key
-                                },
-                                onDragEnd = { draggingKey = null },
-                                onDragCancel = { draggingKey = null },
-                                onDrag = { change, amount ->
-                                    change.consume()
-                                    val key = draggingKey
-                                    if (key != null) {
-                                        val currentRect = hitState.nodes.firstOrNull { it.key == key }?.rect
-                                        val base = customPositions[key] ?: currentRect?.topLeft ?: Offset.Zero
-                                        customPositions[key] = Offset(base.x + amount.x / zoom, base.y + amount.y / zoom)
-                                    } else {
-                                        pan += amount
-                                    }
-                                }
-                            )
-                        }
-                        .pointerInput(Unit) {
-                            detectTransformGestures { _, panChange, zoomChange, _ ->
-                                zoom = (zoom * zoomChange).coerceIn(0.65f, 2.2f)
-                                pan += panChange
-                            }
-                        }
-                ) {
-                    val w = size.width
-                    val h = size.height
-                    val step = 28.dp.toPx()
-                    val dotRadius = 1.dp.toPx()
-                    val gridDotColor = semantic.graphGrid.copy(alpha = 0.50f)
-                    var gx = 0f
-                    while (gx <= w) {
-                        var gy = 0f
-                        while (gy <= h) {
-                            drawCircle(gridDotColor, dotRadius, Offset(gx, gy))
-                            gy += step
-                        }
-                        gx += step
-                    }
-
-                    // 同步 PC 图谱逻辑：最多 6 个目标域名组，超过 6 个应用自动合并为「其他应用」。
-                    // Match PC graph layout: up to 6 host groups; fold apps beyond 6 into "其他应用".
-                    val drawn = groups.flatMap { it.flows }
-                    val allApps = drawn.map { it.app }.distinct()
-                    val selectedFlow = drawn.firstOrNull { it.id == selectedId }
-                    val namedApps = if (allApps.size > 6) {
-                        val slice = allApps.take(5).toMutableList()
-                        if (selectedFlow != null && selectedFlow.app !in slice) slice[4] = selectedFlow.app
-                        slice
-                    } else allApps
-
-                    fun appKey(name: String) = if (name in namedApps) "app:$name" else "other-apps"
-                    val appBuckets = namedApps.map { name ->
-                        Triple(appKey(name), name, drawn.filter { it.app == name })
-                    }.toMutableList()
-                    if (allApps.size > 6) {
-                        appBuckets.add(Triple("other-apps", "其他应用", drawn.filter { it.app !in namedApps }))
-                    }
-
-                    val appW = min(w * 0.34f, 138.dp.toPx())
-                    val hostW = min(w * 0.45f, 186.dp.toPx())
-                    val nodeH = 48.dp.toPx()
-                    val padX = 12.dp.toPx()
-                    val padY = 18.dp.toPx()
-                    fun slotY(idx: Int, count: Int): Float =
-                        if (count <= 1) (h - nodeH) / 2f else padY + idx * (h - padY * 2 - nodeH) / (count - 1).toFloat()
-
-                    val builtNodes = ArrayList<GraphNodeBox>(appBuckets.size + groups.size)
-                    appBuckets.forEachIndexed { idx, (key, label, members) ->
-                        val leader = members.firstOrNull { it.id == selectedId } ?: members.first()
-                        val pos = customPositions[key] ?: Offset(padX, slotY(idx, appBuckets.size))
-                        builtNodes.add(
-                            GraphNodeBox(
-                                key = key,
-                                title = label,
-                                subtitle = "${members.size} 条连接",
-                                isApp = true,
-                                stackCount = 1,
-                                leader = leader,
-                                warning = false,
-                                rect = Rect(pos, Size(appW, nodeH))
-                            )
-                        )
-                    }
-                    groups.forEachIndexed { idx, group ->
-                        val leader = group.flows.firstOrNull { it.id == selectedId } ?: group.flows.first()
-                        val ports = group.flows.map { it.destinationPort }.distinct().size
-                        val subtitle = if (group.flows.size > 1) {
-                            "${group.flows.size} 条连接 · $ports 端口"
-                        } else {
-                            "${leader.protocol} :${leader.destinationPort}"
-                        }
-                        val key = "host:${group.key}"
-                        val pos = customPositions[key] ?: Offset(w - hostW - padX, slotY(idx, groups.size))
-                        builtNodes.add(
-                            GraphNodeBox(
-                                key = key,
-                                title = group.label,
-                                subtitle = subtitle,
-                                isApp = false,
-                                stackCount = group.flows.size,
-                                leader = leader,
-                                warning = group.flows.any { it.event != null },
-                                rect = Rect(pos, Size(hostW, nodeH))
-                            )
-                        )
-                    }
-
-                    val builtEdges = ArrayList<Triple<StudioFlow, Offset, Offset>>()
-                    val nextPulses = ArrayList<PulseEdge>()
-                    val canvas = drawContext.canvas.nativeCanvas
-                    canvas.save()
-                    canvas.translate(pan.x, pan.y)
-                    canvas.scale(zoom, zoom)
-
-                    for (group in groups) {
-                        val targetNode = builtNodes.firstOrNull { it.key == "host:${group.key}" } ?: continue
-                        for ((bucketKey, _, _) in appBuckets) {
-                            val members = group.flows.filter { appKey(it.app) == bucketKey }
-                            if (members.isEmpty()) continue
-                            val sourceNode = builtNodes.firstOrNull { it.key == bucketKey } ?: continue
-                            val start = Offset(sourceNode.rect.right, sourceNode.rect.center.y)
-                            val end = Offset(targetNode.rect.left, targetNode.rect.center.y)
-                            val leader = members.firstOrNull { it.id == selectedId } ?: members.first()
-                            builtEdges.add(Triple(leader, start, end))
-
-                            val rx = members.sumOf { it.rx ?: 0.0 }
-                            val tx = members.sumOf { it.tx ?: 0.0 }
-                            val active = members.any { it.id == selectedId }
-                            val warn = members.any { it.event != null }
-                            val edgeColor = when {
-                                warn -> semantic.warning
-                                active -> primaryColor
-                                else -> semantic.graphEdge
-                            }
-                            val strokeW = (1.3f + min(2.4f, (log2(1.0 + rx + tx) / 14.0).toFloat())).dp.toPx()
-                            val bend = min(68.dp.toPx(), ((end.x - start.x) / 2f).coerceAtLeast(16.dp.toPx()))
-                            val path = Path().apply {
-                                moveTo(start.x, start.y)
-                                cubicTo(start.x + bend, start.y, end.x - bend, end.y, end.x, end.y)
-                            }
-                            drawPath(path, color = edgeColor, style = Stroke(width = strokeW, cap = StrokeCap.Round))
-
-                            if (animatePulses && (tx > 0.0 || rx > 0.0)) {
-                                nextPulses.add(PulseEdge(start = start, end = end, hasRx = rx > 0.0, hasTx = tx > 0.0))
-                            }
+                            bestFlow?.let(onSelectFlow)
                         }
                     }
-
-                    titlePaint.color = inkColor.toArgb()
-                    titlePaint.textSize = 12.5.dp.toPx()
-                    subPaint.textSize = 10.5.dp.toPx()
-                    val corner = CornerRadius(12.dp.toPx(), 12.dp.toPx())
-                    for (node in builtNodes) {
-                        val active = node.leader.id == selectedId ||
-                            (node.isApp && drawn.any { it.id == selectedId && appKey(it.app) == node.key })
-                        if (node.stackCount > 1) {
-                            for (offsetDp in listOf(5.dp.toPx(), 2.5.dp.toPx())) {
-                                drawRoundRect(
-                                    color = semantic.graphNodeSurface.copy(alpha = 0.72f),
-                                    topLeft = Offset(node.rect.left + offsetDp, node.rect.top + offsetDp),
-                                    size = node.rect.size,
-                                    cornerRadius = corner
-                                )
-                                drawRoundRect(
-                                    color = borderColor.copy(alpha = 0.75f),
-                                    topLeft = Offset(node.rect.left + offsetDp, node.rect.top + offsetDp),
-                                    size = node.rect.size,
-                                    cornerRadius = corner,
-                                    style = Stroke(width = 1.dp.toPx())
-                                )
-                            }
-                        }
-                        drawRoundRect(
-                            color = if (active) semantic.graphNodeSelected else semantic.graphNodeSurface,
-                            topLeft = node.rect.topLeft,
-                            size = node.rect.size,
-                            cornerRadius = corner
-                        )
-                        drawRoundRect(
-                            color = when {
-                                node.warning -> semantic.warning
-                                active -> primaryColor
-                                else -> borderColor
+                    .pointerInput(groups, zoom, pan) {
+                        detectDragGestures(
+                            onDragStart = { start ->
+                                val world = Offset((start.x - pan.x) / zoom, (start.y - pan.y) / zoom)
+                                draggingKey = hitState.nodes.lastOrNull { it.rect.contains(world) }?.key
                             },
-                            topLeft = node.rect.topLeft,
-                            size = node.rect.size,
-                            cornerRadius = corner,
-                            style = Stroke(width = (if (active) 2.dp else 1.dp).toPx())
-                        )
-                        val accentBarColor = if (node.isApp) semantic.upload else semantic.download
-                        drawRoundRect(
-                            color = accentBarColor,
-                            topLeft = Offset(node.rect.left + 6.dp.toPx(), node.rect.top + 11.dp.toPx()),
-                            size = Size(3.dp.toPx(), node.rect.height - 22.dp.toPx()),
-                            cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
-                        )
-                        val availW = (node.rect.width - 22.dp.toPx()).coerceAtLeast(16f)
-                        canvas.drawText(
-                            ellipsizeCanvas(node.title, titlePaint, availW),
-                            node.rect.left + 14.dp.toPx(),
-                            node.rect.top + 21.dp.toPx(),
-                            titlePaint
-                        )
-                        subPaint.color = (if (node.warning) semantic.warning else mutedColor).toArgb()
-                        canvas.drawText(
-                            ellipsizeCanvas(node.subtitle, subPaint, availW),
-                            node.rect.left + 14.dp.toPx(),
-                            node.rect.top + 38.dp.toPx(),
-                            subPaint
+                            onDragEnd = { draggingKey = null },
+                            onDragCancel = { draggingKey = null },
+                            onDrag = { change, amount ->
+                                change.consume()
+                                val key = draggingKey
+                                if (key != null) {
+                                    val currentRect = hitState.nodes.firstOrNull { it.key == key }?.rect
+                                    val base = customPositions[key] ?: currentRect?.topLeft ?: Offset.Zero
+                                    customPositions[key] = Offset(base.x + amount.x / zoom, base.y + amount.y / zoom)
+                                } else {
+                                    onPanChange(pan + amount)
+                                }
+                            }
                         )
                     }
-
-                    canvas.restore()
-                    hitState.nodes = builtNodes
-                    hitState.edges = builtEdges
-                    if (pulseEdges != nextPulses) {
-                        pulseEdges = nextPulses
+                    .pointerInput(zoom, pan) {
+                        detectTransformGestures { _, panChange, zoomChange, _ ->
+                            onZoomChange((zoom * zoomChange).coerceIn(0.65f, 2.2f))
+                            onPanChange(pan + panChange)
+                        }
                     }
+            ) {
+                val w = size.width
+                val h = size.height
+                val step = 28.dp.toPx()
+                val dotRadius = 0.9.dp.toPx()
+                val gridDotColor = semantic.graphGrid.copy(alpha = 0.45f)
+                var gx = 0f
+                while (gx <= w) {
+                    var gy = 0f
+                    while (gy <= h) {
+                        drawCircle(gridDotColor, dotRadius, Offset(gx, gy))
+                        gy += step
+                    }
+                    gx += step
                 }
 
-                // 仅在有活跃流量脉冲时挂载轻量叠层，隔离动画帧与静态拓扑画布。
-                // Isolate pulse dot animation into a tiny overlay mounted only when traffic pulses exist.
-                if (animatePulses && pulseEdges.isNotEmpty()) {
-                    PulseOverlayCanvas(
-                        edges = pulseEdges,
-                        pan = pan,
-                        zoom = zoom,
-                        uploadColor = semantic.upload,
-                        downloadColor = semantic.download
+                val drawn = groups.flatMap { it.flows }
+                val allApps = drawn.map { it.app }.distinct()
+                val selectedFlow = drawn.firstOrNull { it.id == selectedId }
+                val namedApps = if (allApps.size > 6) {
+                    val slice = allApps.take(5).toMutableList()
+                    if (selectedFlow != null && selectedFlow.app !in slice) slice[4] = selectedFlow.app
+                    slice
+                } else allApps
+
+                fun appKey(name: String) = if (name in namedApps) "app:$name" else "other-apps"
+                val appBuckets = namedApps.map { name ->
+                    Triple(appKey(name), name, drawn.filter { it.app == name })
+                }.toMutableList()
+                if (allApps.size > 6) {
+                    appBuckets.add(Triple("other-apps", "其他应用", drawn.filter { it.app !in namedApps }))
+                }
+
+                val appW = min(w * 0.34f, 138.dp.toPx())
+                val hostW = min(w * 0.45f, 186.dp.toPx())
+                val nodeH = 46.dp.toPx()
+                val padX = 12.dp.toPx()
+                val padY = 18.dp.toPx()
+                fun slotY(idx: Int, count: Int): Float =
+                    if (count <= 1) (h - nodeH) / 2f else padY + idx * (h - padY * 2 - nodeH) / (count - 1).toFloat()
+
+                val builtNodes = ArrayList<GraphNodeBox>(appBuckets.size + groups.size)
+                appBuckets.forEachIndexed { idx, (key, label, members) ->
+                    val leader = members.firstOrNull { it.id == selectedId } ?: members.first()
+                    val pos = customPositions[key] ?: Offset(padX, slotY(idx, appBuckets.size))
+                    builtNodes.add(
+                        GraphNodeBox(
+                            key = key,
+                            title = label,
+                            subtitle = "${members.size} 条",
+                            isApp = true,
+                            stackCount = 1,
+                            leader = leader,
+                            warning = false,
+                            rect = Rect(pos, Size(appW, nodeH))
+                        )
                     )
                 }
+                groups.forEachIndexed { idx, group ->
+                    val leader = group.flows.firstOrNull { it.id == selectedId } ?: group.flows.first()
+                    val ports = group.flows.map { it.destinationPort }.distinct().size
+                    val subtitle = if (group.flows.size > 1) {
+                        "${group.flows.size} 条 · $ports 端口"
+                    } else {
+                        "${leader.protocol} :${leader.destinationPort}"
+                    }
+                    val key = "host:${group.key}"
+                    val pos = customPositions[key] ?: Offset(w - hostW - padX, slotY(idx, groups.size))
+                    builtNodes.add(
+                        GraphNodeBox(
+                            key = key,
+                            title = group.label,
+                            subtitle = subtitle,
+                            isApp = false,
+                            stackCount = group.flows.size,
+                            leader = leader,
+                            warning = group.flows.any { it.event != null },
+                            rect = Rect(pos, Size(hostW, nodeH))
+                        )
+                    )
+                }
+
+                val builtEdges = ArrayList<Triple<StudioFlow, Offset, Offset>>()
+                val nextPulses = ArrayList<PulseEdge>()
+                val canvas = drawContext.canvas.nativeCanvas
+                canvas.save()
+                canvas.translate(pan.x, pan.y)
+                canvas.scale(zoom, zoom)
+
+                for (group in groups) {
+                    val targetNode = builtNodes.firstOrNull { it.key == "host:${group.key}" } ?: continue
+                    for ((bucketKey, _, _) in appBuckets) {
+                        val members = group.flows.filter { appKey(it.app) == bucketKey }
+                        if (members.isEmpty()) continue
+                        val sourceNode = builtNodes.firstOrNull { it.key == bucketKey } ?: continue
+                        val start = Offset(sourceNode.rect.right, sourceNode.rect.center.y)
+                        val end = Offset(targetNode.rect.left, targetNode.rect.center.y)
+                        val leader = members.firstOrNull { it.id == selectedId } ?: members.first()
+                        builtEdges.add(Triple(leader, start, end))
+
+                        val rx = members.sumOf { it.rx ?: 0.0 }
+                        val tx = members.sumOf { it.tx ?: 0.0 }
+                        val active = members.any { it.id == selectedId }
+                        val warn = members.any { it.event != null }
+                        val edgeColor = when {
+                            warn -> semantic.warning
+                            active -> primaryColor
+                            else -> semantic.graphEdge
+                        }
+                        val strokeW = (1.2f + min(2.2f, (log2(1.0 + rx + tx) / 14.0).toFloat())).dp.toPx()
+                        val bend = min(68.dp.toPx(), ((end.x - start.x) / 2f).coerceAtLeast(16.dp.toPx()))
+                        val path = Path().apply {
+                            moveTo(start.x, start.y)
+                            cubicTo(start.x + bend, start.y, end.x - bend, end.y, end.x, end.y)
+                        }
+                        drawPath(path, color = edgeColor, style = Stroke(width = strokeW, cap = StrokeCap.Round))
+
+                        if (animatePulses && (tx > 0.0 || rx > 0.0)) {
+                            nextPulses.add(PulseEdge(start = start, end = end, hasRx = rx > 0.0, hasTx = tx > 0.0))
+                        }
+                    }
+                }
+
+                titlePaint.color = inkColor.toArgb()
+                titlePaint.textSize = 12.dp.toPx()
+                subPaint.textSize = 10.dp.toPx()
+                val corner = CornerRadius(10.dp.toPx(), 10.dp.toPx())
+                for (node in builtNodes) {
+                    val active = node.leader.id == selectedId ||
+                        (node.isApp && drawn.any { it.id == selectedId && appKey(it.app) == node.key })
+                    if (node.stackCount > 1) {
+                        for (offsetDp in listOf(4.dp.toPx(), 2.dp.toPx())) {
+                            drawRoundRect(
+                                color = semantic.graphNodeSurface.copy(alpha = 0.72f),
+                                topLeft = Offset(node.rect.left + offsetDp, node.rect.top + offsetDp),
+                                size = node.rect.size,
+                                cornerRadius = corner
+                            )
+                            drawRoundRect(
+                                color = borderColor.copy(alpha = 0.75f),
+                                topLeft = Offset(node.rect.left + offsetDp, node.rect.top + offsetDp),
+                                size = node.rect.size,
+                                cornerRadius = corner,
+                                style = Stroke(width = 0.8.dp.toPx())
+                            )
+                        }
+                    }
+                    drawRoundRect(
+                        color = if (active) semantic.graphNodeSelected else semantic.graphNodeSurface,
+                        topLeft = node.rect.topLeft,
+                        size = node.rect.size,
+                        cornerRadius = corner
+                    )
+                    drawRoundRect(
+                        color = when {
+                            node.warning -> semantic.warning
+                            active -> primaryColor
+                            else -> borderColor
+                        },
+                        topLeft = node.rect.topLeft,
+                        size = node.rect.size,
+                        cornerRadius = corner,
+                        style = Stroke(width = (if (active) 1.5.dp else 0.8.dp).toPx())
+                    )
+                    val accentBarColor = if (node.isApp) semantic.upload else semantic.download
+                    drawRoundRect(
+                        color = accentBarColor,
+                        topLeft = Offset(node.rect.left + 6.dp.toPx(), node.rect.top + 11.dp.toPx()),
+                        size = Size(2.5.dp.toPx(), node.rect.height - 22.dp.toPx()),
+                        cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                    )
+                    val availW = (node.rect.width - 20.dp.toPx()).coerceAtLeast(16f)
+                    canvas.drawText(
+                        ellipsizeCanvas(node.title, titlePaint, availW),
+                        node.rect.left + 13.dp.toPx(),
+                        node.rect.top + 20.dp.toPx(),
+                        titlePaint
+                    )
+                    subPaint.color = (if (node.warning) semantic.warning else mutedColor).toArgb()
+                    canvas.drawText(
+                        ellipsizeCanvas(node.subtitle, subPaint, availW),
+                        node.rect.left + 13.dp.toPx(),
+                        node.rect.top + 36.dp.toPx(),
+                        subPaint
+                    )
+                }
+
+                canvas.restore()
+                hitState.nodes = builtNodes
+                hitState.edges = builtEdges
+                if (pulseEdges != nextPulses) {
+                    pulseEdges = nextPulses
+                }
+            }
+
+            if (animatePulses && pulseEdges.isNotEmpty()) {
+                PulseOverlayCanvas(
+                    edges = pulseEdges,
+                    pan = pan,
+                    zoom = zoom,
+                    uploadColor = semantic.upload,
+                    downloadColor = semantic.download
+                )
             }
         }
     }
@@ -774,8 +788,8 @@ private fun PulseOverlayCanvas(
         canvas.save()
         canvas.translate(pan.x, pan.y)
         canvas.scale(zoom, zoom)
-        val upRadius = 3.2.dp.toPx()
-        val downRadius = 3.6.dp.toPx()
+        val upRadius = 3.dp.toPx()
+        val downRadius = 3.4.dp.toPx()
         for (edge in edges) {
             if (edge.hasTx) {
                 drawCircle(uploadColor, radius = upRadius, center = cubicPoint(edge.start, edge.end, pulsePhase))
@@ -813,6 +827,7 @@ private fun SessionFlowCard(
     onClick: () -> Unit
 ) {
     val semantic = LocalWieslerColors.current
+    val isDark = LocalIsDarkTheme.current
     val routeColor = when (flow.routing) {
         FlowRouting.DIRECT -> semantic.upload
         FlowRouting.PROXY -> semantic.download
@@ -827,23 +842,24 @@ private fun SessionFlowCard(
         color = if (selected) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
         else MaterialTheme.colorScheme.surfaceContainerLow,
         border = BorderStroke(
-            width = if (selected) 1.5.dp else 1.dp,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+            width = if (selected) 1.dp else 0.5.dp,
+            color = if (selected) MaterialTheme.colorScheme.primary
+            else if (isDark) Color.White.copy(alpha = 0.07f) else Color.Black.copy(alpha = 0.07f)
         )
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.weight(1f)) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
                         text = flow.host,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -858,8 +874,9 @@ private fun SessionFlowCard(
                 Spacer(modifier = Modifier.width(8.dp))
                 StatusPill(
                     text = flow.exitNode ?: flow.routing.label,
-                    containerColor = routeColor.copy(alpha = 0.16f),
-                    contentColor = routeColor
+                    containerColor = Color.Transparent,
+                    contentColor = routeColor,
+                    showDot = true
                 )
             }
 
@@ -868,15 +885,15 @@ private fun SessionFlowCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column(modifier = Modifier.width(116.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Column(modifier = Modifier.width(104.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
                         text = "↓ ${formatRate(flow.rx)}",
-                        style = MaterialTheme.typography.labelLarge.copy(fontFamily = FontFamily.Monospace),
+                        style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
                         color = semantic.download
                     )
                     Text(
                         text = "↑ ${formatRate(flow.tx)}",
-                        style = MaterialTheme.typography.labelLarge.copy(fontFamily = FontFamily.Monospace),
+                        style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
                         color = semantic.upload
                     )
                 }
@@ -885,29 +902,11 @@ private fun SessionFlowCard(
                     modifier = Modifier.weight(1f)
                 )
             }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "累计 ↓ ${formatBytes(flow.download.toDouble())} · ↑ ${formatBytes(flow.upload.toDouble())}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (flow.event != null) {
-                    Text(
-                        text = "异常事件",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = semantic.warning
-                    )
-                }
-            }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SessionInspectorSheet(
     flow: StudioFlow,
@@ -938,45 +937,43 @@ private fun SessionInspectorSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                StatusPill(
-                    text = "会话检查器 · ${flow.protocol}",
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                Text(
+                    text = flow.host,
+                    style = MaterialTheme.typography.headlineSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Rounded.Close, contentDescription = "关闭检查器")
+                    Icon(Icons.Rounded.Close, contentDescription = "关闭")
                 }
             }
 
-            Text(flow.host, style = MaterialTheme.typography.headlineSmall)
             SelectionContainer {
                 Text(
-                    text = flow.destination,
-                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    text = "${flow.protocol} · ${flow.destination}",
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             if (peers.size > 1) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("同域名连接（${peers.size} 条）", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        peers.forEach { peer ->
-                            FilterChip(
-                                selected = peer.id == flow.id,
-                                onClick = { onSwitchPeer(peer.id) },
-                                label = { Text("${peer.app} · :${peer.destinationPort}") }
-                            )
-                        }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    peers.forEach { peer ->
+                        FilterChip(
+                            selected = peer.id == flow.id,
+                            onClick = { onSwitchPeer(peer.id) },
+                            label = { Text("${peer.app} :${peer.destinationPort}") }
+                        )
                     }
                 }
             }
 
             ExpressiveConnectedChoiceRow(
-                options = listOf("overview" to "概览", "events" to "事件", "raw" to "原始数据"),
+                options = listOf("overview" to "概览", "events" to "事件", "raw" to "原始"),
                 selected = tab,
                 onSelect = { tab = it }
             )
@@ -984,44 +981,30 @@ private fun SessionInspectorSheet(
             when (tab) {
                 "overview" -> {
                     RoutePathStrip(nodes = nodes)
-                    Surface(
-                        shape = MaterialTheme.shapes.medium,
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh
-                    ) {
-                        SelectionContainer {
-                            Column(
-                                modifier = Modifier.fillMaxWidth().padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                InspectorRow("应用 / 类型", flow.app)
-                                InspectorRow("路由状态", flow.routing.label)
-                                InspectorRow("代理链（原序）", flow.route)
-                                InspectorRow("匹配规则", flow.rule)
-                                InspectorRow("源地址", flow.source)
-                                InspectorRow("目标地址", flow.destination)
-                                InspectorRow("实时速率", "↓ ${formatRate(flow.rx)}   ↑ ${formatRate(flow.tx)}")
-                                InspectorRow("累计流量", "↓ ${formatBytes(flow.download.toDouble())}   ↑ ${formatBytes(flow.upload.toDouble())}")
-                                InspectorRow("开始时间", flow.start.ifBlank { "未知" })
-                                InspectorRow("会话 ID", flow.id)
-                            }
+                    SelectionContainer {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            InspectorRow("应用", flow.app)
+                            InspectorRow("路由", flow.routing.label)
+                            InspectorRow("代理链", flow.route)
+                            InspectorRow("规则", flow.rule)
+                            InspectorRow("源地址", flow.source)
+                            InspectorRow("目标", flow.destination)
+                            InspectorRow("速率", "↓ ${formatRate(flow.rx)}  ↑ ${formatRate(flow.tx)}")
+                            InspectorRow("累计", "↓ ${formatBytes(flow.download.toDouble())}  ↑ ${formatBytes(flow.upload.toDouble())}")
+                            InspectorRow("开始", flow.start.ifBlank { "未知" })
+                            InspectorRow("ID", flow.id, showDivider = false)
                         }
                     }
                 }
                 "events" -> {
-                    Surface(
-                        shape = MaterialTheme.shapes.medium,
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh
-                    ) {
-                        Text(
-                            text = flow.event ?: if (isLive) {
-                                "未采集会话级事件。Mihomo /connections 快照仅提供连接元数据与累计字节，不推断网站 HTTP / TLS 错误。"
-                            } else {
-                                "本演示会话当前无异常事件。"
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.fillMaxWidth().padding(14.dp)
-                        )
-                    }
+                    Text(
+                        text = flow.event ?: if (isLive) "未采集会话级事件。" else "无异常事件。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
                 "raw" -> {
                     val pretty = remember(flow) { flow.formattedRawJson() }
@@ -1032,8 +1015,10 @@ private fun SessionInspectorSheet(
                         SelectionContainer {
                             Text(
                                 text = pretty,
-                                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                                modifier = Modifier.fillMaxWidth().padding(14.dp)
+                                style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp)
                             )
                         }
                     }
@@ -1044,10 +1029,13 @@ private fun SessionInspectorSheet(
 }
 
 @Composable
-private fun InspectorRow(label: String, value: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+private fun InspectorRow(label: String, value: String, showDivider: Boolean = true) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        if (showDivider) {
+            Spacer(modifier = Modifier.height(4.dp))
+            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+        }
     }
 }

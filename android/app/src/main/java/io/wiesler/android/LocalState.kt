@@ -102,12 +102,68 @@ enum class ThemePreference(val code: String, val label: String) {
     }
 }
 
+enum class MonitorPerformanceMode(
+    val code: String,
+    val label: String,
+    val summary: String,
+    val activeTickMs: Long,
+    val overviewControllerMs: Long,
+    val icmpIntervalMs: Long,
+    val rfSteadyPollMs: Long,
+    val rfEscalatedPollMs: Long,
+    val allowBackdropBlur: Boolean,
+    val allowPulseAnimation: Boolean
+) {
+    ECO(
+        code = "eco",
+        label = "极致省电",
+        summary = "3s 采样 · 关闭毛玻璃模糊与脉冲动效 · 最低电量与发热负担",
+        activeTickMs = 3_000L,
+        overviewControllerMs = 4_500L,
+        icmpIntervalMs = 3_000L,
+        rfSteadyPollMs = 12_000L,
+        rfEscalatedPollMs = 4_000L,
+        allowBackdropBlur = false,
+        allowPulseAnimation = false
+    ),
+    BALANCED(
+        code = "balanced",
+        label = "均衡省电",
+        summary = "1.5s 活跃采样 · 异常自动提速 · 兼顾流畅度与手机续航（推荐）",
+        activeTickMs = 1_500L,
+        overviewControllerMs = 3_000L,
+        icmpIntervalMs = 1_500L,
+        rfSteadyPollMs = 6_000L,
+        rfEscalatedPollMs = 3_000L,
+        allowBackdropBlur = true,
+        allowPulseAnimation = true
+    ),
+    HIGH(
+        code = "high",
+        label = "高频排障",
+        summary = "1s 高频采集 · 3s 双卡主动基带轮询 · 适合短时精细取证",
+        activeTickMs = 1_000L,
+        overviewControllerMs = 2_000L,
+        icmpIntervalMs = 1_000L,
+        rfSteadyPollMs = 3_000L,
+        rfEscalatedPollMs = 3_000L,
+        allowBackdropBlur = true,
+        allowPulseAnimation = true
+    );
+
+    companion object {
+        fun fromCode(code: String?): MonitorPerformanceMode =
+            entries.firstOrNull { it.code == code } ?: BALANCED
+    }
+}
+
 data class AppUiPreferences(
     val pulseAnimation: Boolean = true,
     val expectProxy: Boolean = false,
     val uploadThresholdKib: Int = 1024,
     val dynamicColor: Boolean = false,
-    val themeMode: ThemePreference = ThemePreference.DARK
+    val themeMode: ThemePreference = ThemePreference.DARK,
+    val performanceMode: MonitorPerformanceMode = MonitorPerformanceMode.BALANCED
 )
 
 object AppUiPreferencesStore {
@@ -116,7 +172,10 @@ object AppUiPreferencesStore {
         expectProxy = prefs.getBoolean("privacy_expect_proxy", false),
         uploadThresholdKib = prefs.getInt("privacy_upload_threshold_kib", 1024).coerceIn(1, 1_048_576),
         dynamicColor = prefs.getBoolean("ui_dynamic_color", false),
-        themeMode = ThemePreference.fromCode(prefs.getString("ui_theme_mode", ThemePreference.DARK.code))
+        themeMode = ThemePreference.fromCode(prefs.getString("ui_theme_mode", ThemePreference.DARK.code)),
+        performanceMode = MonitorPerformanceMode.fromCode(
+            prefs.getString("monitor_performance_mode", MonitorPerformanceMode.BALANCED.code)
+        )
     )
 
     fun write(prefs: SharedPreferences, value: AppUiPreferences) {
@@ -126,6 +185,7 @@ object AppUiPreferencesStore {
             .putInt("privacy_upload_threshold_kib", value.uploadThresholdKib.coerceIn(1, 1_048_576))
             .putBoolean("ui_dynamic_color", value.dynamicColor)
             .putString("ui_theme_mode", value.themeMode.code)
+            .putString("monitor_performance_mode", value.performanceMode.code)
             .apply()
     }
 }

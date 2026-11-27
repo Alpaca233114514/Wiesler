@@ -1,6 +1,5 @@
 package io.wiesler.android.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -8,41 +7,29 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.CellTower
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Security
-import androidx.compose.material.icons.rounded.TrackChanges
 import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -56,7 +43,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun RfMonitoringSection(
     snapshot: RfDiagnosticsSnapshot,
@@ -71,7 +58,7 @@ fun RfMonitoringSection(
     val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.ROOT)
 
     val severityAccent = when (assess.severity) {
-        RfSeverity.SEVERE_POLLUTION -> semantic.danger
+        RfSeverity.SEVERE_POLLUTION,
         RfSeverity.INTERFERENCE -> semantic.danger
         RfSeverity.WATCH -> semantic.warning
         RfSeverity.CLEAR -> semantic.success
@@ -91,24 +78,7 @@ fun RfMonitoringSection(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(Icons.Rounded.CellTower, contentDescription = null, tint = severityAccent)
-                Column {
-                    Text("蜂窝射频污染监测与归因", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        text = health.statusText,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.width(8.dp))
+            Text("蜂窝射频", style = MaterialTheme.typography.titleLarge)
             Switch(
                 checked = health.active,
                 onCheckedChange = { enabled ->
@@ -122,220 +92,144 @@ fun RfMonitoringSection(
         }
 
         if (!health.permissionGranted) {
-            Surface(
+            Button(
+                onClick = onRequestPermissions,
+                colors = wieslerPrimaryButtonColors(),
                 shape = MaterialTheme.shapes.medium,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        "需授予「精确定位」与「读取手机状态」权限，以主动调用 requestCellInfoUpdate 绕过息屏缓存冻结并读取双卡 RSRP / RSRQ / SINR。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
-                        Text("授予权限并开启射频监测")
-                    }
-                }
+                Text("授予权限并开启射频监测")
             }
         }
 
-        // 检测 1：主动多卡采集与防冻结去重状态 / Check 1: Active dual-SIM capture & anti-freeze deduplication
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(IntrinsicSize.Max),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            MetricChipTile(
-                label = "新鲜基带帧",
-                value = "${health.freshFrames}",
-                subtitle = health.lastFreshAtMs?.let { "更新 ${timeFmt.format(Date(it))}" } ?: "尚无新鲜样本",
-                accentColor = semantic.download,
-                compact = true,
-                modifier = Modifier.weight(1f).fillMaxHeight()
-            )
-            MetricChipTile(
-                label = "过滤缓存帧",
-                value = "${health.cachedDuplicates}",
-                subtitle = if (health.frozenSlotCount > 0) "${health.frozenSlotCount} 卡缓存冻结" else "时间戳去重正常",
-                accentColor = if (health.frozenSlotCount > 0) semantic.warning else MaterialTheme.colorScheme.onSurface,
-                compact = true,
-                modifier = Modifier.weight(1f).fillMaxHeight()
-            )
-            MetricChipTile(
-                label = "污染风险分",
-                value = if (assess.severity == RfSeverity.IDLE) "—" else "${assess.score}",
-                subtitle = assess.severity.label,
-                accentColor = severityAccent,
-                compact = true,
-                modifier = Modifier.weight(1f).fillMaxHeight()
-            )
-        }
+        MetricStatStrip(
+            items = listOf(
+                StatMetricItem(
+                    label = "风险分",
+                    value = if (assess.severity == RfSeverity.IDLE) "—" else "${assess.score}",
+                    accent = severityAccent
+                ),
+                StatMetricItem(
+                    label = "新鲜帧",
+                    value = "${health.freshFrames}",
+                    accent = semantic.download
+                ),
+                StatMetricItem(
+                    label = "去重帧",
+                    value = "${health.cachedDuplicates}",
+                    accent = if (health.frozenSlotCount > 0) semantic.warning else null
+                )
+            ),
+            compact = true
+        )
 
         if (health.active) {
-            LinearWavyProgressIndicator(
-                progress = { (assess.score / 100f).coerceIn(0.03f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
+            MinimalLinearBar(
+                progress = (assess.score / 100f).coerceIn(0.03f, 1f),
                 color = severityAccent
             )
         }
 
-        // 检测 2：多卡联合射频污染评分器 / Check 2: Dual-SIM RF contamination scorer
-        Surface(
-            shape = MaterialTheme.shapes.medium,
-            color = severityAccent.copy(alpha = 0.10f),
-            border = BorderStroke(1.dp, severityAccent.copy(alpha = 0.35f))
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+        HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(Icons.Rounded.Security, contentDescription = null, tint = severityAccent, modifier = Modifier.size(18.dp))
-                        Text(
-                            "多卡污染评分器",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = severityAccent,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    StatusPill(
-                        text = if (assess.dualSimCoincidence) "双卡跨网并发" else assess.severity.label,
-                        containerColor = severityAccent.copy(alpha = 0.18f),
-                        contentColor = severityAccent
-                    )
-                }
-                Text(assess.title, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    assess.detail,
+                    text = assess.title,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                StatusPill(
+                    text = if (assess.dualSimCoincidence) "双卡并发" else assess.severity.label,
+                    containerColor = Color.Transparent,
+                    contentColor = severityAccent,
+                    showDot = true
+                )
+            }
+            if (assess.severity != RfSeverity.IDLE) {
+                Text(
+                    text = assess.detail,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+            if (assess.scissorsAlerts > 0 || assess.syncLossAlerts > 0 || assess.pingPongAlerts > 0) {
                 FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    StatusPill(
-                        text = "剪刀差(30s) ${assess.scissorsAlerts}",
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        contentColor = if (assess.scissorsAlerts > 0) semantic.danger else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    StatusPill(
-                        text = "底板失步(30s) ${assess.syncLossAlerts}",
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        contentColor = if (assess.syncLossAlerts > 0) semantic.danger else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    StatusPill(
-                        text = "乒乓切换(60s) ${assess.pingPongAlerts}",
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        contentColor = if (assess.pingPongAlerts >= 4) semantic.warning else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        // 各卡槽明细 + 迷你 RSRP/SINR 曲线 / Per-SIM slot telemetry + mini trend chart
-        if (assess.slots.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                assess.slots.forEach { slot ->
-                    RfSlotCard(slot = slot)
-                }
-            }
-        }
-
-        // 检测 3：协议栈与业务层联合归因 / Check 3: Cross-layer RF vs proxy/egress attribution
-        Surface(
-            shape = MaterialTheme.shapes.medium,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            border = BorderStroke(1.dp, attributionAccent.copy(alpha = 0.42f))
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(Icons.Rounded.TrackChanges, contentDescription = null, tint = attributionAccent, modifier = Modifier.size(18.dp))
-                        Text(
-                            "射频 / 代理归因 · 60s",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = attributionAccent,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                    if (assess.scissorsAlerts > 0) {
+                        StatusPill("剪刀差 ${assess.scissorsAlerts}", Color.Transparent, semantic.danger, showDot = true)
                     }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    StatusPill(
-                        text = "置信度 ${attr.confidence}",
-                        containerColor = attributionAccent.copy(alpha = 0.16f),
-                        contentColor = attributionAccent
-                    )
+                    if (assess.syncLossAlerts > 0) {
+                        StatusPill("失步 ${assess.syncLossAlerts}", Color.Transparent, semantic.danger, showDot = true)
+                    }
+                    if (assess.pingPongAlerts > 0) {
+                        StatusPill("乒乓 ${assess.pingPongAlerts}", Color.Transparent, semantic.warning, showDot = true)
+                    }
                 }
-                Text(attr.title, style = MaterialTheme.typography.titleMedium)
-                Text(attr.detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                val icmpSummary = if (attr.icmpSampleCount > 0) {
-                    String.format(
-                        Locale.ROOT,
-                        "ICMP 丢包 %.1f%% · 均延迟 %s（%d 样本）",
-                        attr.icmpLossPercent ?: 0.0,
-                        attr.icmpAvgRttMs?.let { String.format(Locale.ROOT, "%.0f ms", it) } ?: "—",
-                        attr.icmpSampleCount
-                    )
-                } else {
-                    "ICMP 未采样"
+            }
+        }
+
+        if (assess.slots.isNotEmpty()) {
+            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                assess.slots.forEachIndexed { idx, slot ->
+                    RfSlotRow(slot = slot)
+                    if (idx < assess.slots.lastIndex) {
+                        HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                    }
                 }
-                val proxySummary = when (attr.proxyHealthy) {
-                    true -> "代理正常"
-                    false -> "代理异常"
-                    null -> "代理未连接"
-                }
-                val cellSummary = when (attr.cellularValidated) {
-                    true -> "蜂窝校验通过"
-                    false -> "蜂窝校验失效"
-                    null -> "蜂窝校验待观测"
-                }
+            }
+        }
+
+        HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = "$icmpSummary · $proxySummary · $cellSummary",
-                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    text = attr.title,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
+                Spacer(modifier = Modifier.width(8.dp))
+                StatusPill(
+                    text = attr.confidence,
+                    containerColor = Color.Transparent,
+                    contentColor = attributionAccent
+                )
+            }
+            Text(
+                text = attr.detail,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (attr.cause != RfFaultCause.INSUFFICIENT_EVIDENCE && attr.cause != RfFaultCause.HEALTHY) {
                 Text(
-                    text = "建议：${attr.suggestion}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface
+                    text = attr.suggestion,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = attributionAccent
                 )
             }
         }
 
-        // 最近射频告警时间线 / Recent RF anomaly timeline
         if (assess.recentEvents.isNotEmpty()) {
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-            Text("近期射频告警事件", style = MaterialTheme.typography.titleSmall)
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                assess.recentEvents.take(6).forEach { ev ->
+            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                assess.recentEvents.take(5).forEach { ev ->
                     val evColor = when (ev.kind) {
                         RfAnomalyKind.DUAL_SIM_POLLUTION,
                         RfAnomalyKind.RF_SYNC_LOSS,
@@ -343,28 +237,25 @@ fun RfMonitoringSection(
                         RfAnomalyKind.CELL_PINGPONG,
                         RfAnomalyKind.CACHE_FREEZE -> semantic.warning
                     }
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(
-                                    "${timeFmt.format(Date(ev.observedAtMs))} · ${ev.title}",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = evColor
-                                )
-                                Text(
-                                    ev.detail,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+                        Text(
+                            text = ev.title,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = evColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = timeFmt.format(Date(ev.observedAtMs)),
+                            style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
@@ -372,10 +263,11 @@ fun RfMonitoringSection(
 
         if (health.freshFrames > 0 || health.cachedDuplicates > 0) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                OutlinedButton(onClick = onResetRf) {
-                    Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("清空本次射频滑窗")
+                TextButton(
+                    onClick = onResetRf,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text("清空滑窗")
                 }
             }
         }
@@ -384,129 +276,78 @@ fun RfMonitoringSection(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun RfSlotCard(slot: RfSlotSummary) {
+private fun RfSlotRow(slot: RfSlotSummary) {
     val semantic = LocalWieslerColors.current
     val hasDanger = RfAnomalyKind.RF_INTERFERENCE in slot.activeFlags || RfAnomalyKind.RF_SYNC_LOSS in slot.activeFlags
-    val hasWarn = RfAnomalyKind.CELL_PINGPONG in slot.activeFlags || slot.cacheFrozen
-    val borderColor = when {
-        hasDanger -> semantic.danger.copy(alpha = 0.50f)
-        hasWarn -> semantic.warning.copy(alpha = 0.45f)
-        else -> MaterialTheme.colorScheme.outlineVariant
-    }
 
-    Surface(
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(1.dp, borderColor)
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "卡 ${slot.slotIndex + 1} · ${slot.operatorName}${if (slot.plmn.isNotBlank()) " (${slot.plmn})" else ""}",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "${slot.bandLabel}${if (slot.carrierAggregation) " · CA" else ""}${slot.arfcn?.let { " · ARFCN $it" } ?: ""}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                StatusPill(
-                    text = if (!slot.inService) "无服务" else slot.rat.label,
-                    containerColor = if (hasDanger) semantic.danger.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceContainerHighest,
-                    contentColor = if (hasDanger) semantic.danger else MaterialTheme.colorScheme.onSurface
-                )
-            }
+            Text(
+                text = "SIM ${slot.slotIndex + 1} · ${slot.operatorName} · ${slot.bandLabel}",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Medium),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text = if (!slot.inService) "无服务" else slot.rat.label,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (hasDanger) semantic.danger else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                RfValueChip(
+        MetricStatStrip(
+            items = listOf(
+                StatMetricItem(
                     label = "RSRP",
                     value = slot.rsrpDbm?.let { "$it dBm" } ?: "—",
-                    accent = if ((slot.rsrpDbm ?: 0) <= -140) semantic.danger else semantic.download,
-                    modifier = Modifier.weight(1f)
-                )
-                RfValueChip(
+                    accent = if ((slot.rsrpDbm ?: 0) <= -140) semantic.danger else semantic.download
+                ),
+                StatMetricItem(
                     label = "RSRQ",
                     value = slot.rsrqDb?.let { "$it dB" } ?: "—",
-                    accent = if ((slot.rsrqDb ?: 0) <= -15) semantic.danger else semantic.upload,
-                    modifier = Modifier.weight(1f)
-                )
-                RfValueChip(
+                    accent = if ((slot.rsrqDb ?: 0) <= -15) semantic.danger else semantic.upload
+                ),
+                StatMetricItem(
                     label = "SINR",
                     value = slot.sinrDb?.let { "${if (it > 0) "+" else ""}$it dB" } ?: "—",
-                    accent = if ((slot.sinrDb ?: 99) <= 0) semantic.danger else semantic.success,
-                    modifier = Modifier.weight(1f)
+                    accent = if ((slot.sinrDb ?: 99) <= 0) semantic.danger else semantic.success
                 )
-            }
+            ),
+            compact = true
+        )
 
-            if (slot.trend.size >= 2) {
-                RfMiniTrendChart(trend = slot.trend)
-            }
+        if (slot.trend.size >= 2) {
+            RfMiniTrendChart(trend = slot.trend)
+        }
 
-            val corrText = slot.rsrpSinrCorrelation?.let { String.format(Locale.ROOT, "r(RSRP,SINR)=%+.2f", it) } ?: "r=采样不足"
-            Text(
-                text = "新鲜 ${slot.freshFrames} · 去重 ${slot.cachedDuplicates} · 60s切换 ${slot.pingPongTransitions60s} · $corrText",
-                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            if (slot.activeFlags.isNotEmpty()) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    slot.activeFlags.forEach { flag ->
-                        val color = if (flag == RfAnomalyKind.RF_INTERFERENCE || flag == RfAnomalyKind.RF_SYNC_LOSS) {
-                            semantic.danger
-                        } else {
-                            semantic.warning
-                        }
-                        StatusPill(
-                            text = flag.label,
-                            containerColor = color.copy(alpha = 0.16f),
-                            contentColor = color
-                        )
+        if (slot.activeFlags.isNotEmpty()) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                slot.activeFlags.forEach { flag ->
+                    val color = if (flag == RfAnomalyKind.RF_INTERFERENCE || flag == RfAnomalyKind.RF_SYNC_LOSS) {
+                        semantic.danger
+                    } else {
+                        semantic.warning
                     }
+                    StatusPill(
+                        text = flag.label,
+                        containerColor = Color.Transparent,
+                        contentColor = color,
+                        showDot = true
+                    )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun RfValueChip(
-    label: String,
-    value: String,
-    accent: Color,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(
-                value,
-                style = MaterialTheme.typography.labelLarge.copy(fontFamily = FontFamily.Monospace),
-                color = accent,
-                maxLines = 1
-            )
         }
     }
 }
@@ -518,18 +359,18 @@ private fun RfMiniTrendChart(trend: List<RfTrendPoint>) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(54.dp)
-            .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(10.dp))
+            .height(46.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
             .padding(horizontal = 6.dp, vertical = 6.dp)
     ) {
-        Canvas(modifier = Modifier.fillMaxWidth().height(42.dp)) {
+        Canvas(modifier = Modifier.fillMaxWidth().height(34.dp)) {
             val w = size.width
             val h = size.height
-            drawLine(gridColor, Offset(0f, h * 0.5f), Offset(w, h * 0.5f), strokeWidth = 1f)
+            drawLine(gridColor, Offset(0f, h * 0.5f), Offset(w, h * 0.5f), strokeWidth = 0.8f)
             val n = trend.size.coerceAtLeast(2)
             val stepX = w / (n - 1).toFloat()
 
-            // SINR 曲线 (-20..+30 dB) 与剪刀差红点叠加绘制。 / Plot SINR (-20..+30 dB) and highlight flagged points.
             val sinrPath = Path()
             var started = false
             trend.forEachIndexed { idx, pt ->
@@ -544,14 +385,13 @@ private fun RfMiniTrendChart(trend: List<RfTrendPoint>) {
                     sinrPath.lineTo(x, y)
                 }
                 if (pt.flagged) {
-                    drawCircle(color = semantic.danger, radius = 3.5f, center = Offset(x, y))
+                    drawCircle(color = semantic.danger, radius = 3.2f, center = Offset(x, y))
                 }
             }
             if (started) {
-                drawPath(sinrPath, color = semantic.download, style = Stroke(width = 2.2f, cap = StrokeCap.Round))
+                drawPath(sinrPath, color = semantic.download, style = Stroke(width = 2f, cap = StrokeCap.Round))
             }
 
-            // RSRP 曲线 (-156..-50 dBm)。 / Plot RSRP (-156..-50 dBm) as dashed/secondary line.
             val rsrpPath = Path()
             var rsrpStarted = false
             trend.forEachIndexed { idx, pt ->
@@ -567,7 +407,7 @@ private fun RfMiniTrendChart(trend: List<RfTrendPoint>) {
                 }
             }
             if (rsrpStarted) {
-                drawPath(rsrpPath, color = semantic.upload.copy(alpha = 0.75f), style = Stroke(width = 1.6f, cap = StrokeCap.Round))
+                drawPath(rsrpPath, color = semantic.upload.copy(alpha = 0.72f), style = Stroke(width = 1.5f, cap = StrokeCap.Round))
             }
         }
     }
