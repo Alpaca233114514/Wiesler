@@ -263,6 +263,86 @@ object SiteDictionary {
             domains = listOf("amap.com", "autonavi.com")
         ),
         SiteEntry(
+            id = "hellobike",
+            name = "哈啰出行",
+            url = "hellobike.com",
+            category = "出行",
+            aliases = listOf("哈啰", "hellobike", "单车"),
+            domains = listOf("hellobike.com", "hello-inc.com")
+        ),
+        SiteEntry(
+            id = "didi",
+            name = "滴滴出行",
+            url = "didiglobal.com",
+            category = "出行",
+            aliases = listOf("滴滴", "didi"),
+            domains = listOf("didiglobal.com", "didichuxing.com", "udache.com", "xiaojukeji.com")
+        ),
+        SiteEntry(
+            id = "ctrip",
+            name = "携程",
+            url = "ctrip.com",
+            category = "出行",
+            aliases = listOf("携程", "ctrip", "trip"),
+            domains = listOf("ctrip.com", "c-ctrip.com", "trip.com")
+        ),
+        SiteEntry(
+            id = "railway-12306",
+            name = "铁路 12306",
+            url = "12306.cn",
+            category = "出行",
+            aliases = listOf("12306", "火车票"),
+            domains = listOf("12306.cn")
+        ),
+        SiteEntry(
+            id = "eleme",
+            name = "饿了么",
+            url = "ele.me",
+            category = "生活",
+            aliases = listOf("饿了么", "eleme"),
+            domains = listOf("ele.me", "elemecdn.com")
+        ),
+        SiteEntry(
+            id = "china-telecom",
+            name = "中国电信",
+            url = "189.cn",
+            category = "运营商",
+            aliases = listOf("电信", "telecom", "rcs", "189"),
+            domains = listOf("189.cn", "ct10000.com", "chinatelecom.com.cn")
+        ),
+        SiteEntry(
+            id = "china-mobile",
+            name = "中国移动",
+            url = "10086.cn",
+            category = "运营商",
+            aliases = listOf("移动", "cmcc", "10086"),
+            domains = listOf("10086.cn", "chinamobile.com", "cmvideo.cn")
+        ),
+        SiteEntry(
+            id = "china-unicom",
+            name = "中国联通",
+            url = "10010.com",
+            category = "运营商",
+            aliases = listOf("联通", "unicom", "10010"),
+            domains = listOf("10010.com", "chinaunicom.com")
+        ),
+        SiteEntry(
+            id = "push-analytics-sdk",
+            name = "推送 / 统计 SDK",
+            url = "getui.com",
+            category = "SDK",
+            aliases = listOf("个推", "极光", "友盟", "getui", "jpush", "umeng"),
+            domains = listOf("getui.com", "getui.net", "igexin.com", "jpush.cn", "jiguang.cn", "umeng.com", "umengcloud.com", "umsns.com", "bugly.qq.com")
+        ),
+        SiteEntry(
+            id = "egress-probe",
+            name = "公网出口 / 归属地探测",
+            url = "ipify.org",
+            category = "探测",
+            aliases = listOf("ip", "egress", "ipify", "ipwho", "wiesler"),
+            domains = listOf("ipify.org", "ipwho.is", "ipinfo.io", "ip.sb", "ifconfig.me")
+        ),
+        SiteEntry(
             id = "jd",
             name = "京东",
             url = "jd.com",

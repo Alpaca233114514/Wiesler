@@ -70,14 +70,22 @@
     for(const flow of flows){
       const key=siteGroupKey(flow);
       if(!groups.has(key)){
-        groups.set(key,{key,label:flow.site ? flow.site.name : flow.host,site:flow.site || null,hosts:[],hostSet:new Set(),flows:[]});
+        groups.set(key,{key,label:flow.site ? flow.site.name : flow.host,site:flow.site || null,hosts:[],hostSet:new Set(),flows:[],order:groups.size});
       }
       const group=groups.get(key);
       const hk=hostKey(flow);
       if(!group.hostSet.has(hk)){group.hostSet.add(hk);group.hosts.push(flow.host);}
       group.flows.push(flow);
     }
-    return [...groups.values()].map(({hostSet, ...rest}) => rest);
+    const isRawIp = label => /^(\d{1,3}(\.\d{1,3}){3}|\[?[0-9a-fA-F:]+\]?)$/.test(String(label || '').trim());
+    // 按网站视图优先展示已识别网站与域名节点，避免单连接裸 IP 挤占前 6 个图谱槽位。
+    // Prioritize mapped sites and domain hosts over raw IP literals in site view so the 6 graph slots stay informative.
+    return [...groups.values()]
+      .sort((a, b) => {
+        const rank = g => (g.site ? 2 : isRawIp(g.label) ? 0 : 1);
+        return (rank(b) - rank(a)) || (b.flows.length - a.flows.length) || (a.order - b.order);
+      })
+      .map(({hostSet, order, ...rest}) => rest);
   }
   function routePath(flow) {
     const nodes=[{kind:'computer',label:'电脑',detail:`${flow.app} · ${flow.source}`}];

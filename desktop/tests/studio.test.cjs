@@ -593,7 +593,7 @@ test('graph folds CDN subdomains into one website node by default, supports raw 
   const ui=setup(async()=>raw);connect(ui);await flush();
   const siteNodes=ui.get('nodes').children.filter(n=>n.attrs['data-key']?.startsWith('site:'));
   assert.equal(siteNodes.length,2);
-  assert.match(ui.content(siteNodes[0]),/哔哩哔哩.*bilibili\.com · 2 域名 · 2 连接/);
+  assert.match(ui.content(siteNodes[0]),/哔哩哔哩.*2 域名 · 2 连接 · bilibili\.com/);
   assert.match(ui.content(siteNodes[1]),/YouTube.*rr1\.googlevideo\.com/);
   assert.equal(ui.get('selection-title').textContent,'哔哩哔哩');
   assert.match(ui.get('selection-endpoint').textContent,/bilibili\.com · i0\.hdslb\.com/);

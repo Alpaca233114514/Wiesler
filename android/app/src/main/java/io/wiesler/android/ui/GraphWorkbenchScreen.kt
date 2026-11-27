@@ -622,8 +622,8 @@ private fun InteractiveHostGraphCanvas(
                         val hosts = group.distinctHosts.ifEmpty { listOf(leader.host) }
                         val subtitle = if (group.site != null) {
                             when {
-                                hosts.size > 1 -> "${group.site.url} · ${hosts.size} 域名 · ${group.flows.size} 连接"
-                                group.flows.size > 1 -> "${hosts.first()} · ${group.flows.size} 连接"
+                                hosts.size > 1 -> "${hosts.size} 域名 · ${group.flows.size} 连接 · ${group.site.url}"
+                                group.flows.size > 1 -> "${group.flows.size} 连接 · ${hosts.first()}"
                                 else -> "${hosts.first()} · :${leader.destinationPort}"
                             }
                         } else if (group.flows.size > 1) {

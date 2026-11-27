@@ -262,6 +262,8 @@ fun groupByHost(flows: List<StudioFlow>): List<StudioHostGroup> {
     }
 }
 
+private val rawIpHostRegex = Regex("""^(\d{1,3}(\.\d{1,3}){3}|\[?[0-9a-fA-F:]+\]?)$""")
+
 fun groupBySite(flows: List<StudioFlow>): List<StudioHostGroup> {
     val groups = LinkedHashMap<String, MutableList<StudioFlow>>()
     val labels = LinkedHashMap<String, String>()
@@ -278,7 +280,7 @@ fun groupBySite(flows: List<StudioFlow>): List<StudioHostGroup> {
         val list = hostLists.getOrPut(key) { ArrayList() }
         if (seen.add(flow.hostKey)) list.add(flow.host)
     }
-    return groups.map { (key, members) ->
+    val built = groups.map { (key, members) ->
         StudioHostGroup(
             key = key,
             label = labels.getValue(key),
@@ -287,6 +289,20 @@ fun groupBySite(flows: List<StudioFlow>): List<StudioHostGroup> {
             distinctHosts = hostLists.getValue(key)
         )
     }
+    // 按网站视图优先展示已识别网站与域名节点，避免单连接裸 IP 挤占前 6 个图谱槽位。
+    // Prioritize mapped sites and domain hosts over raw IP literals so the 6 graph slots stay informative.
+    return built.withIndex()
+        .sortedWith(
+            compareByDescending<IndexedValue<StudioHostGroup>> { (_, g) ->
+                when {
+                    g.site != null -> 2
+                    rawIpHostRegex.matches(g.label.trim()) -> 0
+                    else -> 1
+                }
+            }.thenByDescending { (_, g) -> g.flows.size }
+                .thenBy { it.index }
+        )
+        .map { it.value }
 }
 
 fun routePath(flow: StudioFlow): List<RouteNode> {

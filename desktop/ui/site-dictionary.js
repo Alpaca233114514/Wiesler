@@ -239,6 +239,86 @@
       domains: ['amap.com', 'autonavi.com']
     },
     {
+      id: 'hellobike',
+      name: '哈啰出行',
+      url: 'hellobike.com',
+      category: '出行',
+      aliases: ['哈啰', 'hellobike', '单车'],
+      domains: ['hellobike.com', 'hello-inc.com']
+    },
+    {
+      id: 'didi',
+      name: '滴滴出行',
+      url: 'didiglobal.com',
+      category: '出行',
+      aliases: ['滴滴', 'didi'],
+      domains: ['didiglobal.com', 'didichuxing.com', 'udache.com', 'xiaojukeji.com']
+    },
+    {
+      id: 'ctrip',
+      name: '携程',
+      url: 'ctrip.com',
+      category: '出行',
+      aliases: ['携程', 'ctrip', 'trip'],
+      domains: ['ctrip.com', 'c-ctrip.com', 'trip.com']
+    },
+    {
+      id: 'railway-12306',
+      name: '铁路 12306',
+      url: '12306.cn',
+      category: '出行',
+      aliases: ['12306', '火车票'],
+      domains: ['12306.cn']
+    },
+    {
+      id: 'eleme',
+      name: '饿了么',
+      url: 'ele.me',
+      category: '生活',
+      aliases: ['饿了么', 'eleme'],
+      domains: ['ele.me', 'elemecdn.com']
+    },
+    {
+      id: 'china-telecom',
+      name: '中国电信',
+      url: '189.cn',
+      category: '运营商',
+      aliases: ['电信', 'telecom', 'rcs', '189'],
+      domains: ['189.cn', 'ct10000.com', 'chinatelecom.com.cn']
+    },
+    {
+      id: 'china-mobile',
+      name: '中国移动',
+      url: '10086.cn',
+      category: '运营商',
+      aliases: ['移动', 'cmcc', '10086'],
+      domains: ['10086.cn', 'chinamobile.com', 'cmvideo.cn']
+    },
+    {
+      id: 'china-unicom',
+      name: '中国联通',
+      url: '10010.com',
+      category: '运营商',
+      aliases: ['联通', 'unicom', '10010'],
+      domains: ['10010.com', 'chinaunicom.com']
+    },
+    {
+      id: 'push-analytics-sdk',
+      name: '推送 / 统计 SDK',
+      url: 'getui.com',
+      category: 'SDK',
+      aliases: ['个推', '极光', '友盟', 'getui', 'jpush', 'umeng'],
+      domains: ['getui.com', 'getui.net', 'igexin.com', 'jpush.cn', 'jiguang.cn', 'umeng.com', 'umengcloud.com', 'umsns.com', 'bugly.qq.com']
+    },
+    {
+      id: 'egress-probe',
+      name: '公网出口 / 归属地探测',
+      url: 'ipify.org',
+      category: '探测',
+      aliases: ['ip', 'egress', 'ipify', 'ipwho', 'wiesler'],
+      domains: ['ipify.org', 'ipwho.is', 'ipinfo.io', 'ip.sb', 'ifconfig.me']
+    },
+    {
       id: 'jd',
       name: '京东',
       url: 'jd.com',

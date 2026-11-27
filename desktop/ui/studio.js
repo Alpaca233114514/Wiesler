@@ -417,8 +417,8 @@
     displayed.forEach((group,i)=>{
       const hosts=group.hosts || [group.label];
       const sub=group.site
-        ?(hosts.length>1?`${group.site.url} · ${hosts.length} 域名 · ${group.flows.length} 连接`
-          :group.flows.length>1?`${hosts[0]} · ${group.flows.length} 连接`
+        ?(hosts.length>1?`${hosts.length} 域名 · ${group.flows.length} 连接 · ${group.site.url}`
+          :group.flows.length>1?`${group.flows.length} 连接 · ${hosts[0]}`
           :`${hosts[0]} · :${group.flows[0].port}`)
         :(group.flows.length>1?`${group.flows.length} 条连接 · ${new Set(group.flows.map(f=>f.port)).size} 个端口`:`${group.flows[0].protocol} :${group.flows[0].port}`);
       nodes.push({key:nodeKey(group),label:group.label,sub,
