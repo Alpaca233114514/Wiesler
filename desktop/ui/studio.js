@@ -589,6 +589,7 @@
     for(const route of ['system','proxy']){$(`egress-${route}-ip`).textContent='—';$(`egress-${route}-status`).textContent='尚未探测';$(`egress-${route}-location`).textContent='地理位置未知';}
     $('egress-refresh').disabled=false;
     discovering=false;discoveryMessage='';rebaseline=false;activeController='';
+    window.MonitorTools?.setControllerHealth({connected:false,healthy:false,error:null});
     frames=[];current=null;controllerFrame=null;systemCurrent=null;systemError=null;replay=null;replayFrames=null;frozen=false;positions.clear();
     $('freeze').textContent='冻结';$('snapshot-count').textContent='0 次快照';
     renderMonitor();render();
@@ -615,8 +616,8 @@
     if(liveBusy){timer=setTimeout(()=>poll(token),250);return;}
     if(!invoke){$('source-state').textContent='实时连接请使用桌面程序';return;}
     liveBusy=true;
-    try{const raw=await invoke('snapshot',{controller:activeController});if(token!==generation||document.hidden)return;window.MonitorTools.appendRequestLog(raw.http_status,null);controllerFrame=M.frame(raw,rebaseline?null:controllerFrame,raw.observed_at);accept(M.mergeSources(controllerFrame,systemCurrent,systemError));rebaseline=false;}
-    catch(e){if(token!==generation||document.hidden)return;const next={time:Date.now(),flows:[],events:[],source:'live',error:e?.message||String(e)};window.MonitorTools.appendRequestLog(e?.http_status,next.error);controllerFrame=next;accept(M.mergeSources(controllerFrame,systemCurrent,systemError));}
+    try{const raw=await invoke('snapshot',{controller:activeController});if(token!==generation||document.hidden)return;window.MonitorTools.appendRequestLog(raw.http_status,null);window.MonitorTools.setControllerHealth({connected:true,healthy:true,error:null});controllerFrame=M.frame(raw,rebaseline?null:controllerFrame,raw.observed_at);accept(M.mergeSources(controllerFrame,systemCurrent,systemError));rebaseline=false;}
+    catch(e){if(token!==generation||document.hidden)return;const next={time:Date.now(),flows:[],events:[],source:'live',error:e?.message||String(e)};window.MonitorTools.appendRequestLog(e?.http_status,next.error);window.MonitorTools.setControllerHealth({connected:true,healthy:false,error:next.error});controllerFrame=next;accept(M.mergeSources(controllerFrame,systemCurrent,systemError));}
     finally{liveBusy=false;if(token===generation&&collecting&&!document.hidden)timer=setTimeout(()=>poll(token),1000);}
   }
   async function refreshEgress(){

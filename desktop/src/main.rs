@@ -3,6 +3,7 @@ mod commands;
 mod discovery;
 mod dns_capture;
 mod packet_loss;
+mod rf;
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 
 fn data_root() -> PathBuf {
@@ -86,6 +87,7 @@ fn main() {
     log("starting desktop");
     let result = tauri::Builder::default()
         .manage(dns_capture::State::default())
+        .manage(rf::State::default())
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 use tauri::Manager;
@@ -110,7 +112,9 @@ fn main() {
             commands::discover_databases,
             commands::sessions,
             commands::diagnose,
-            packet_loss::ping
+            packet_loss::ping,
+            rf::rf_probe,
+            rf::rf_reset
         ])
         .setup(|app| {
             let data_dir = data_root().join("WebView2");
