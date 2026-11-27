@@ -129,13 +129,13 @@ enum class MonitorPerformanceMode(
     BALANCED(
         code = "balanced",
         label = "均衡省电",
-        summary = "1.5s 活跃采样 · 异常自动提速 · 兼顾流畅度与手机续航（推荐）",
+        summary = "1.5s 活跃采样 · 关闭全屏离屏模糊 · 异常自动提速（推荐）",
         activeTickMs = 1_500L,
         overviewControllerMs = 3_000L,
         icmpIntervalMs = 1_500L,
         rfSteadyPollMs = 6_000L,
         rfEscalatedPollMs = 3_000L,
-        allowBackdropBlur = true,
+        allowBackdropBlur = false,
         allowPulseAnimation = true
     ),
     HIGH(

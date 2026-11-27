@@ -182,7 +182,9 @@ fun WieslerAppShell(
     val isDark = LocalIsDarkTheme.current
     val enableBackdropBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
         state.preferences.performanceMode.allowBackdropBlur
-    val backdropLayer = rememberGraphicsLayer()
+    // 仅在真正启用毛玻璃时分配离屏 GraphicsLayer，避免默认模式下占用数十 MB 全屏 EGL 显存。
+    // Allocate offscreen GraphicsLayer only when backdrop blur is active to avoid multi-10MB EGL FBO VRAM.
+    val backdropLayer: GraphicsLayer? = if (enableBackdropBlur) rememberGraphicsLayer() else null
     val backdropTopLeft = remember { OffsetHolder() }
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -206,7 +208,7 @@ fun WieslerAppShell(
     ) {
         // 仅在启用毛玻璃模糊时录制离屏 GraphicsLayer；极致省电模式直接渲染主树，消除整屏离屏重绘开销。
         // Record offscreen GraphicsLayer only when backdrop blur is enabled; ECO mode renders directly with zero blur pass.
-        val contentModifier = if (enableBackdropBlur) {
+        val contentModifier = if (enableBackdropBlur && backdropLayer != null) {
             Modifier
                 .fillMaxSize()
                 .onGloballyPositioned { backdropTopLeft.value = it.positionInRoot() }
@@ -381,7 +383,7 @@ private fun FloatingGlassNavBar(
     activeTab: WieslerTab,
     isDark: Boolean,
     enableBackdropBlur: Boolean,
-    backdropLayer: GraphicsLayer,
+    backdropLayer: GraphicsLayer?,
     backdropTopLeft: OffsetHolder,
     onSelectTab: (WieslerTab) -> Unit,
     modifier: Modifier = Modifier
@@ -518,7 +520,7 @@ private fun FloatingGlassNavBar(
                 }
             }
     ) {
-        if (enableBackdropBlur && cachedBlurEffect != null) {
+        if (enableBackdropBlur && cachedBlurEffect != null && backdropLayer != null) {
             Box(
                 modifier = Modifier
                     .matchParentSize()
