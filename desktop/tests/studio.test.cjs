@@ -591,6 +591,8 @@ test('home dashboard runs progressive quality check, updates power profiles, and
   assert.match(ui.get('home-grade').textContent,/S/);
   assert.equal(ui.get('home-dimensions').children.length,4);
   assert.equal(ui.get('home-scenarios').children.length,4);
+  const css=fs.readFileSync('desktop/ui/studio.css','utf8');
+  assert.match(css,/\.home-dim-cell\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);[^}]*justify-content:\s*stretch;/s);
 
   ui.get('view-settings').onclick();
   ui.get('settings-tab-monitoring').onclick();

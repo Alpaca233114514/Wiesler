@@ -2685,10 +2685,14 @@ details[open] > summary::after {
 
 .home-dim-cell {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto 1fr;
+  justify-content: stretch;
   justify-items: stretch;
   align-content: start;
+  align-items: start;
   text-align: start;
+  inline-size: 100%;
   height: auto;
   min-block-size: 94px;
   padding: 14px 18px;

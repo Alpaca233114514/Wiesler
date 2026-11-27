@@ -222,7 +222,7 @@
       available: true,
       statusText: validatedNote,
       primaryMetric: label,
-      detail: `${validatedNote} · 开启射频监测可采集 Wi-Fi RSSI / ADB 双卡信号`
+      detail: '开启射频监测可采集 Wi-Fi RSSI / ADB 双卡信号'
     };
   }
 

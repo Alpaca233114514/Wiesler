@@ -147,7 +147,10 @@
         cell.setAttribute('data-tone', !dim.available ? 'neutral' : dim.score >= 80 ? 'ok' : dim.score >= 55 ? 'warn' : 'danger');
         const head = text('div', '', 'home-dim-head');
         head.append(text('span', dim.label, 'home-dim-label'), text('strong', dim.score != null ? `${dim.score}` : '—', 'home-dim-score'));
-        cell.append(head, text('div', dim.primaryMetric, 'home-dim-metric'), text('div', `${dim.statusText} · ${dim.detail}`, 'home-dim-detail'));
+        const detailText = dim.detail && dim.statusText && dim.detail.startsWith(dim.statusText)
+          ? dim.detail
+          : [dim.statusText, dim.detail].filter(Boolean).join(' · ');
+        cell.append(head, text('div', dim.primaryMetric, 'home-dim-metric'), text('div', detailText, 'home-dim-detail'));
         cell.onclick = () => {
           if (dim.id === 'access_signal' || dim.id === 'latency_stability') selectView('monitor');
           else if (dim.id === 'reachability_dns') selectView('privacy');
